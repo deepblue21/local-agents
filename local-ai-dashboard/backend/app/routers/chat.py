@@ -9,9 +9,11 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ..db import get_conn
+from ..db import get_conn, latest_deployment
 from ..schemas import ChatMessage, ChatRequest, PromptTemplate
 from ..services.anthropic_chat import stream_chat
+from ..services.ollama import get_ollama
+from ..config import get_settings
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -89,19 +91,74 @@ async def chat_stream(req: ChatRequest):
     async def gen():
         full_text = ""
         last_metrics = None
-        async for event in stream_chat(
-            messages=[m.model_dump() for m in req.messages],
-            system=system,
-            model=None,
-            temperature=req.temperature,
-            max_tokens=req.max_tokens,
-            top_p=req.top_p,
-        ):
-            if event["type"] == "delta":
-                full_text += event["text"]
-            elif event["type"] == "metrics":
-                last_metrics = {k: v for k, v in event.items() if k != "type"}
-            yield f"data: {json.dumps(event)}\n\n"
+
+        # 1. Fetch active model in the deployment
+        deploy = latest_deployment()
+        active_model_id = deploy.get("activeModelId")
+
+        # 2. Check if the model is installed in Ollama
+        active_local_model = None
+        if active_model_id:
+            try:
+                installed = await get_ollama().list_models()
+                installed_by_id = {m["id"]: m for m in installed}
+                active_local_model = installed_by_id.get(active_model_id)
+            except Exception:
+                pass
+
+        if active_local_model:
+            # Determine sharded nodes based on deployment strategy
+            shards = []
+            strategy = deploy.get("strategy")
+            nodes_list = get_settings().nodes
+            if strategy == "shard":
+                shards = [n.id for n in nodes_list]
+            elif strategy == "pin":
+                pinned = deploy.get("pinnedNodeId")
+                shards = [pinned] if pinned else []
+            elif strategy == "per-node":
+                per_node = deploy.get("perNode") or {}
+                shards = [nid for nid, mid in per_node.items() if mid == active_model_id]
+
+            # Build messages for Ollama
+            messages_payload = []
+            if system:
+                messages_payload.append({"role": "system", "content": system})
+            for m in req.messages:
+                if m.role != "system":
+                    messages_payload.append({"role": m.role, "content": m.content})
+
+            # Stream from Ollama
+            stream_gen = get_ollama().chat_stream(
+                model_name=active_local_model["name"],
+                messages=messages_payload,
+                temperature=req.temperature,
+                max_tokens=req.max_tokens,
+                top_p=req.top_p,
+            )
+
+            async for event in stream_gen:
+                if event["type"] == "delta":
+                    full_text += event["text"]
+                elif event["type"] == "metrics":
+                    event["nodes"] = shards
+                    last_metrics = {k: v for k, v in event.items() if k != "type"}
+                yield f"data: {json.dumps(event)}\n\n"
+        else:
+            # Fallback to Anthropic Claude (or synthetic response)
+            async for event in stream_chat(
+                messages=[m.model_dump() for m in req.messages],
+                system=system,
+                model=None,
+                temperature=req.temperature,
+                max_tokens=req.max_tokens,
+                top_p=req.top_p,
+            ):
+                if event["type"] == "delta":
+                    full_text += event["text"]
+                elif event["type"] == "metrics":
+                    last_metrics = {k: v for k, v in event.items() if k != "type"}
+                yield f"data: {json.dumps(event)}\n\n"
 
         # Persist messages.
         conn = get_conn()

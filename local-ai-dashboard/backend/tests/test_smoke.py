@@ -79,3 +79,72 @@ def test_kb_list_empty(client):
     r = client.get("/api/kb/docs")
     assert r.status_code == 200
     assert r.json() == []
+
+
+def test_chat_stream_anthropic_fallback(client):
+    body = {
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 0.7,
+        "max_tokens": 100,
+        "top_p": 0.9
+    }
+    r = client.post("/api/chat/stream", json=body)
+    assert r.status_code == 200
+    assert "ANTHROPIC_API_KEY" in r.text
+
+
+def test_chat_routing_to_ollama(client, monkeypatch):
+    from app.services.ollama import OllamaClient
+    import json as _json
+    import app.db as db
+
+    mock_models = [
+        {
+            "id": "deepseek-v3-67b",
+            "name": "deepseek-v3:67b",
+            "family": "DeepSeek",
+            "params": "67B",
+            "quant": "q4_K_M",
+            "size": 38.6,
+            "totalLayers": 80,
+            "contextWindow": 16384,
+            "vramFootprint": 38.6,
+            "lastUsed": ""
+        }
+    ]
+
+    async def mock_list_models(self):
+        return mock_models
+
+    async def mock_chat_stream(self, model_name, messages, temperature, max_tokens, top_p):
+        yield {"type": "delta", "text": "Hello from mock local Ollama!"}
+        yield {
+            "type": "metrics",
+            "tps": 25.0,
+            "time": 1.5,
+            "tokens": 30,
+            "model": model_name,
+            "nodes": []
+        }
+        yield {"type": "done"}
+
+    monkeypatch.setattr(OllamaClient, "list_models", mock_list_models)
+    monkeypatch.setattr(OllamaClient, "chat_stream", mock_chat_stream)
+
+    # Insert deployment directly to SQLite to avoid background thread block / sleep starvation
+    db.get_conn().execute(
+        "INSERT INTO deployments (active_model, strategy, pinned_node, per_node_json) "
+        "VALUES (?, ?, ?, ?)",
+        ("deepseek-v3-67b", "shard", None, _json.dumps({})),
+    )
+
+    body = {
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 0.7,
+        "max_tokens": 100,
+        "top_p": 0.9
+    }
+    r = client.post("/api/chat/stream", json=body)
+    assert r.status_code == 200
+    assert "Hello from mock local Ollama!" in r.text
+    assert "25.0" in r.text

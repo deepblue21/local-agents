@@ -119,7 +119,12 @@ async def build_state() -> dict[str, Any]:
     installed_by_id = {m["id"]: m for m in installed}
     # 3. deployment from db
     deploy = latest_deployment()
-    active = installed_by_id.get(deploy["activeModelId"])
+    active_model_id = deploy.get("activeModelId")
+    active = None
+    for m in installed:
+        if m["id"] == active_model_id or m["name"] == active_model_id:
+            active = m
+            break
     # 4. enrich nodes with layer placement
     nodes = _compute_layer_assignment(
         nodes,

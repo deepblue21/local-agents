@@ -149,6 +149,67 @@ class OllamaClient:
             )
         return out
 
+    async def chat_stream(
+        self,
+        model_name: str,
+        messages: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        top_p: float = 0.9,
+    ) -> AsyncIterator[dict]:
+        """Yield streaming chat events from Ollama's /api/chat endpoint."""
+        ollama_messages = [
+            {"role": m["role"], "content": m["content"]}
+            for m in messages
+            if m["role"] in ("user", "assistant", "system")
+        ]
+
+        options = {
+            "temperature": temperature,
+            "top_p": top_p,
+            "num_predict": max_tokens,
+        }
+
+        async with self._client.stream(
+            "POST",
+            f"{self.base}/api/chat",
+            json={
+                "model": model_name,
+                "messages": ollama_messages,
+                "options": options,
+                "stream": True,
+            }
+        ) as r:
+            r.raise_for_status()
+            async for line in r.aiter_lines():
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                if "message" in data and "content" in data["message"]:
+                    yield {"type": "delta", "text": data["message"]["content"]}
+
+                if data.get("done"):
+                    eval_duration = data.get("eval_duration") or 0
+                    eval_count = data.get("eval_count") or 0
+                    total_duration = data.get("total_duration") or 0
+
+                    tps = round(eval_count * 1e9 / eval_duration, 1) if eval_duration > 0 else 0.0
+                    elapsed = round(total_duration / 1e9, 2) if total_duration > 0 else 0.0
+
+                    yield {
+                        "type": "metrics",
+                        "tps": tps,
+                        "time": elapsed,
+                        "tokens": eval_count,
+                        "model": model_name,
+                        "nodes": [],
+                    }
+                    yield {"type": "done"}
+
 
 _singleton: OllamaClient | None = None
 
