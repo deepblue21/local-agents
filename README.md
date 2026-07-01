@@ -118,3 +118,10 @@ browser security headers. A full review — findings, severities, and fixes — 
 
 See `docs/ARCHITECTURE.md` for the protocol and security boundaries, `docs/SECURITY_AUDIT.md`
 for the security audit, and `docs/RESEARCH.md` for research and recommendations.
+
+## Release
+
+The Android release build is minified (R8) and signed. Without an `android/keystore.properties`
+it falls back to the debug key for quick sideload APKs; add a real upload keystore for store
+distribution. Full signing steps, store-listing draft, permissions/data-safety notes, and a
+pre-release checklist are in `docs/RELEASE.md`.

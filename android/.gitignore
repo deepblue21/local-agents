@@ -1,0 +1,15 @@
+# Gradle / build outputs
+.gradle/
+build/
+app/build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+captures/
+
+# Release signing — GERÇEK anahtarları/parolaları ASLA commit etme
+keystore.properties
+*.jks
+*.keystore

@@ -216,9 +216,13 @@ Firebase/FCM project credentials ve companion-side push token akışı.
   İsteğe bağlı: Material 3 Expressive seçici hareket/bileşen dokunuşları.
 - **Faz 4 — Sunucu-destekli tasarım paritesi.** FCM tabanlı gerçek
   **push bildirimi** (telefon kapalıyken bile takip) için Firebase credentials ekle.
-- **Faz 5 — Sürüm hazırlığı.** H1: `usesCleartextTraffic`'i `network-security-config` ile
-  yalnız yerel adreslere sınırla (tamamlandı). Mağaza metadatası, ekran görüntüleri
-  (tasarım ekranları kullanılabilir), imzalama, gizlilik notları.
+- **Faz 5 — Sürüm hazırlığı (kısmen tamamlandı).** H1 cleartext sınırlaması tamamlandı.
+  Eklendi: release imzalama iskelesi (`keystore.properties` varsa gerçek yükleme
+  anahtarı, yoksa debug fallback), `keystore.properties.example` + `android/.gitignore`,
+  ve `docs/RELEASE.md` (imzalama adımları, mağaza listesi taslağı, izin/veri-güvenliği
+  notları, yayın öncesi checklist). Minified R8 release APK ~2.9 MB üretiliyor.
+  Kalan: gerçek yükleme anahtarı üretimi, mağaza ekran görüntüleri/gizlilik politikası
+  URL'si, cihazda dumanla test, Play App Signing ile gönderim.
 
 ## 9. Kaynaklar
 

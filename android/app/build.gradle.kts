@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -18,12 +20,34 @@ android {
         setProperty("archivesBaseName", "Local_Agents")
     }
 
+    // Gerçek yükleme anahtarı: android/keystore.properties (git'e girmez) varsa oradan
+    // okunur; yoksa yerel yan-yükleme için debug anahtarına düşülür. Bkz. docs/RELEASE.md.
+    val keystorePropsFile = rootProject.file("keystore.properties")
+    val hasReleaseKeystore = keystorePropsFile.exists()
+
+    signingConfigs {
+        create("release") {
+            if (hasReleaseKeystore) {
+                val props = Properties().apply {
+                    keystorePropsFile.inputStream().use { load(it) }
+                }
+                storeFile = rootProject.file(props.getProperty("storeFile"))
+                storePassword = props.getProperty("storePassword")
+                keyAlias = props.getProperty("keyAlias")
+                keyPassword = props.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
-            // Yan-yükleme/test için release'i debug anahtarıyla imzala (kurulabilir,
-            // küçük minified APK). Mağaza dağıtımında gerçek imza anahtarıyla değiştir.
-            signingConfig = signingConfigs.getByName("debug")
+            // Yükleme anahtarı varsa onunla; yoksa yan-yükleme için debug anahtarıyla imzala.
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
