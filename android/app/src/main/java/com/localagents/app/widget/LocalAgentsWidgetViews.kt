@@ -13,7 +13,7 @@ internal object LocalAgentsWidgetViews {
         base(context, size).apply {
             when (size) {
                 LocalAgentsWidgetSize.MINI -> {
-                    setTextViewText(R.id.widget_mini_label, "...")
+                    setTextViewText(R.id.widget_mini_label, context.getString(R.string.widget_mini_placeholder))
                     setTextViewText(R.id.widget_mini_status, context.getString(R.string.widget_loading))
                 }
                 LocalAgentsWidgetSize.STATUS -> {
@@ -72,7 +72,10 @@ internal object LocalAgentsWidgetViews {
     private fun mini(context: Context, snapshot: LocalAgentsWidgetSnapshot): RemoteViews =
         base(context, LocalAgentsWidgetSize.MINI).apply {
             val strings = context.widgetStrings()
-            setTextViewText(R.id.widget_mini_label, if (snapshot.paired) "LA" else context.getString(R.string.widget_short_pair))
+            setTextViewText(
+                R.id.widget_mini_label,
+                if (snapshot.paired) context.getString(R.string.widget_mini_initials) else context.getString(R.string.widget_short_pair),
+            )
             setTextViewText(R.id.widget_mini_status, widgetConnectionLabel(strings, snapshot))
             setInt(R.id.widget_dot, "setBackgroundResource", snapshot.dotRes())
         }

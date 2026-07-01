@@ -123,10 +123,10 @@ internal class LocalAgentsWidgetRepository(
     private fun friendlyWidgetError(error: Throwable): String = when (error) {
         is ApiException -> error.message
         else -> error.message ?: appContext.getString(R.string.widget_error_unexpected)
-    }.truncateForWidget()
+    }.truncateForWidget(appContext.getString(R.string.widget_truncation_ellipsis))
 
-    private fun String.truncateForWidget(): String =
-        if (length <= 64) this else take(63).trimEnd() + "…"
+    private fun String.truncateForWidget(ellipsis: String): String =
+        if (length <= 64) this else take(64 - ellipsis.length).trimEnd() + ellipsis
 
     private companion object {
         const val WIDGET_TIMEOUT_MS = 8500L

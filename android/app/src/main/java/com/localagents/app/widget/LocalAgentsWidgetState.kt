@@ -66,7 +66,7 @@ internal fun widgetRunTitle(strings: WidgetStringResolver, run: AgentRun?): Stri
     run.status == "completed" -> strings.get(R.string.widget_run_completed, run.model)
     run.status == "failed" -> strings.get(R.string.widget_run_failed, run.model)
     run.status == "cancelled" -> strings.get(R.string.widget_run_cancelled, run.model)
-    else -> "${run.status} · ${run.model}"
+    else -> strings.get(R.string.widget_run_unknown, run.status, run.model)
 }
 
 internal fun widgetRunActionLabel(strings: WidgetStringResolver, run: AgentRun?): String = when (run?.status) {
@@ -82,7 +82,8 @@ internal fun widgetRunActionCommand(run: AgentRun?): String? = when (run?.status
 }
 
 internal fun widgetPrompt(strings: WidgetStringResolver, run: AgentRun?, maxLength: Int): String =
-    run?.prompt?.replace(Regex("\\s+"), " ")?.trim()?.truncateWidget(maxLength)
+    run?.prompt?.replace(Regex("\\s+"), " ")?.trim()
+        ?.truncateWidget(maxLength, strings.get(R.string.widget_truncation_ellipsis))
         ?: strings.get(R.string.widget_default_prompt)
 
 internal fun widgetUpdatedLabel(
@@ -156,15 +157,15 @@ internal fun widgetRunMetaLabel(
     if (snapshot.activeToolCount > 0 && widgetRunIsLive(run)) {
         parts.add(strings.get(R.string.widget_tool_count, snapshot.activeToolCount))
     }
-    return parts.joinToString("  ·  ")
+    return parts.joinToString(strings.get(R.string.widget_meta_separator))
 }
 
-private fun String.truncateWidget(maxLength: Int): String {
+private fun String.truncateWidget(maxLength: Int, ellipsis: String): String {
     if (length <= maxLength) return this
-    if (maxLength <= 1) return take(maxLength)
-    val clipped = take(maxLength - 1).trimEnd()
+    if (maxLength <= ellipsis.length) return ellipsis.take(maxLength)
+    val clipped = take(maxLength - ellipsis.length).trimEnd()
     val wordSafe = clipped.substringBeforeLast(" ", clipped)
         .takeIf { it.length >= maxLength / 2 }
         ?: clipped
-    return wordSafe + "…"
+    return wordSafe + ellipsis
 }

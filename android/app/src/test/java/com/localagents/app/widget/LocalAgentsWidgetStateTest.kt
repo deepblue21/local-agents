@@ -55,6 +55,13 @@ class LocalAgentsWidgetStateTest {
     }
 
     @Test
+    fun unknownRunStatusUsesLocalizedFallback() {
+        val run = run(status = "warming")
+
+        assertEquals("warming · qwen3.6", widgetRunTitle(strings, run))
+    }
+
+    @Test
     fun promptIsTrimmedForSmallLayouts() {
         val run = run(prompt = "Bu    metin     gereksiz   boşlukları   temizler ve sonra kısalır")
 
@@ -163,10 +170,13 @@ class LocalAgentsWidgetStateTest {
             R.string.widget_run_completed -> "Tamamlandı · ${args[0]}"
             R.string.widget_run_failed -> "Başarısız · ${args[0]}"
             R.string.widget_run_cancelled -> "İptal edildi · ${args[0]}"
+            R.string.widget_run_unknown -> "${args[0]} · ${args[1]}"
             R.string.action_resume -> "Devam"
             R.string.action_pause -> "Duraklat"
             R.string.widget_action_open -> "Aç"
             R.string.widget_default_prompt -> "Yeni bir görev başlatmak için uygulamayı aç."
+            R.string.widget_meta_separator -> "  ·  "
+            R.string.widget_truncation_ellipsis -> "…"
             R.string.widget_time_now -> "şimdi"
             R.string.widget_time_minutes -> "${args[0]} dk"
             R.string.widget_time_hours -> "${args[0]} sa"

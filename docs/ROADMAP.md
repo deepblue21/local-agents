@@ -194,6 +194,9 @@ Tamamlananlar:
 - **Faz 3 / H3 i18n ilk geçişi** — shell/topbar/nav, ilk kurulum, eşleştirme,
   oturumlar, çalışma monitörü, çalışmalar, modeller ve ayarlar ekranlarındaki ana
   kullanıcı metinleri `strings.xml` kaynaklarına taşındı.
+- **Faz 3 / H3 widget i18n cilası** — mini widget sabitleri, bilinmeyen run durumu
+  formatı, meta ayırıcı ve kısaltma ellipsis'i `strings.xml` kaynaklarına taşındı;
+  regresyon testi bilinmeyen run statüsünü kapsar.
 - **Faz 3 / G10 fontlar** — Gerçek **Inter** (4 ağırlık) + **JetBrains Mono** (2 ağırlık)
   `res/font/`'a paketlendi ve `Type.kt`'te bağlandı; Inter `.otf→.ttf` (cu2qu) çevrildi,
   altı dosyada Türkçe glif kapsamı (ç ğ ı İ ö ş ü) `fontTools` ile doğrulandı. Sistem
