@@ -1,0 +1,97 @@
+name: local-agents
+
+services:
+  api:
+    build: ./server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      LOCAL_AGENTS_DATABASE: /data/local_agents.db
+      LOCAL_AGENTS_RUNNER_SOCKET: /run/local-agents/runner.sock
+    ports:
+      - "127.0.0.1:${LOCAL_AGENTS_HOST_PORT:-8787}:8787"
+    volumes:
+      - local-agents-data:/data
+      - runner-socket:/run/local-agents
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      runner:
+        condition: service_started
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  socket-init:
+    image: local-agents-runner
+    user: "0:0"
+    network_mode: none
+    command: ["sh", "-c", "chown 10002:10000 /run/local-agents && chmod 0770 /run/local-agents"]
+    volumes:
+      - runner-socket:/run/local-agents
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+
+  runner:
+    build: ./runner
+    restart: unless-stopped
+    network_mode: none
+    environment:
+      LOCAL_AGENTS_RUNNER_WORKSPACE: /workspace
+    volumes:
+      - type: bind
+        source: ${LOCAL_AGENTS_WORKSPACE}
+        target: /workspace
+      - runner-socket:/run/local-agents
+    depends_on:
+      socket-init:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["public"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - api
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["models"]
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  local-agents-data:
+  runner-socket:
+  ollama-data:

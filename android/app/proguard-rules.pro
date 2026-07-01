@@ -1,0 +1,2 @@
+-dontwarn org.conscrypt.**
+-keepattributes Signature

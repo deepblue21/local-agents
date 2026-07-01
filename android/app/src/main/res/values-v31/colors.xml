@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ (API 31) Material You: widget'ın çekirdek nötr/aksan renkleri sistemin
+  dinamik paletine bağlanır; böylece duvar kâğıdı temasına uyum sağlar. Durum renkleri
+  (success/warning/danger) ve yumuşak tonlar anlamsal kalsın diye marka değerinde tutulur
+  (bunlar values/colors.xml'den miras alınır).
+-->
+<resources>
+    <color name="widget_canvas">@android:color/system_neutral1_900</color>
+    <color name="widget_surface">@android:color/system_neutral1_800</color>
+    <color name="widget_surface_raised">@android:color/system_neutral2_700</color>
+    <color name="widget_border">@android:color/system_neutral2_700</color>
+    <color name="widget_text_primary">@android:color/system_neutral1_50</color>
+    <color name="widget_text_secondary">@android:color/system_neutral2_200</color>
+    <color name="widget_muted">@android:color/system_neutral2_400</color>
+    <color name="widget_accent">@android:color/system_accent1_200</color>
+    <color name="widget_on_accent">@android:color/system_accent1_900</color>
+</resources>

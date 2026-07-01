@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-agents-server"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "httpx>=0.28,<1",
+  "pydantic-settings>=2.7,<3",
+  "qrcode[pil]>=8,<9",
+  "langgraph>=0.3,<2",
+  "langgraph-checkpoint-sqlite>=2,<4",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["local_agents*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "../runner/tests"]
+asyncio_mode = "auto"
+pythonpath = [".", "../runner"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

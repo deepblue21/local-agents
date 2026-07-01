@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Şimdilik kullanılmıyor. Uygulama, Inter/JetBrains Mono için "Downloadable Fonts"
+  (Google Fonts sağlayıcısı) yerine res/font'a paketlenen .ttf dosyalarını kullanır
+  (bkz. theme/Type.kt ve docs/FONTS.md).
+
+  Google Fonts sağlayıcısına geçmek istenirse, sertifika dizisini elle yazmayın:
+  Android Studio'da res > New > Font Resource File ile bir "downloadable font" ekleyin;
+  AS bu dosyayı doğru "com_google_android_gms_fonts_certs" değerleriyle otomatik üretir.
+-->
+<resources />

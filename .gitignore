@@ -1,56 +1,25 @@
-# Byte-compiled / optimized / DLL files
+.env
+.venv/
+.runtime/
+.pytest_cache/
+.pytest-tmp-codex/
+.ruff_cache/
+.idea/
+.codex-remote-attachments/
+
 __pycache__/
 *.py[cod]
-*$py.class
 
-# C extensions
-*.so
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/app/build/
+android/build/
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
-.venv/
-venv/
-ENV/
-env/
-
-# IDEs
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Project specific
-local-ai-dashboard/backend/.venv/
-local-ai-dashboard/backend/data/
-local-ai-dashboard/backend/.env
-local-ai-dashboard/backend/app.db
-local-ai-dashboard/backend/pytest-cache-files-*/
-local-ai-dashboard/backend/.pytest_cache/
-local-ai-dashboard/pytest-cache-files-*/
-local-ai-dashboard/.pytest_cache/
-
-# Databases
+server/data/
 *.db
 *.sqlite
 
-# OS generated
-.DS_Store
-Thumbs.db
+node_modules/
+dist/
+build/
