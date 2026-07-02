@@ -38,6 +38,14 @@ class TokenBundle(BaseModel):
     device_id: str
 
 
+class DeviceOut(BaseModel):
+    id: str
+    name: str
+    created_at: datetime
+    last_seen_at: datetime
+    revoked_at: datetime | None = None
+
+
 class SessionCreate(BaseModel):
     title: str = Field(default="Yeni sohbet", min_length=1, max_length=120)
 

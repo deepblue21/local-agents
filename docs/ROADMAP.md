@@ -206,6 +206,10 @@ Tamamlananlar:
 - **Eşleştirme/oturum dayanıklılığı** — pairing TTL geliştirme ortamında 240 dakikaya
   çıkarıldı; Android expired/revoked refresh token gördüğünde stale credential'ları
   temizleyip son sunucu adresi prefilled şekilde pairing ekranına döner.
+- **Güvenlik sertleştirme — M3/M4/M8** — admin cihaz listeleme + revoke API eklendi
+  (`GET /api/v1/admin/devices`, `POST /api/v1/admin/devices/{id}/revoke`); revoke mevcut
+  access/refresh token'larını geçersiz kılar. Runner `search_files` artık Python `re`
+  yerine timeout'lu `ripgrep` kullanır; bulunmayan executable kontrollü `400` döner.
 
 Kalan büyük dış-servis parçası: app tamamen kapalıyken server-initiated push için
 Firebase/FCM project credentials ve companion-side push token akışı.

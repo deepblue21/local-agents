@@ -20,6 +20,8 @@ link-local, and other non-public network targets by default to reduce SSRF risk.
 - `GET /health`: unauthenticated companion liveness plus limited host readiness
   metadata for pairing previews: default model, web-tool availability, and Ollama
   default-model readiness.
+- `GET /api/v1/admin/devices`: list paired devices for the companion owner.
+- `POST /api/v1/admin/devices/{id}/revoke`: revoke a paired device and its tokens.
 - `POST /api/v1/pair/exchange`: exchange a short-lived pairing code for device tokens.
 - `POST /api/v1/auth/refresh`: rotate a refresh token and issue a new access token.
 - `GET /api/v1/models`: list models and provider capabilities.
@@ -71,6 +73,8 @@ Codes are displayed in four-character groups for manual entry; the server normal
 case and visual separators before comparing the hash.
 Access tokens expire after fifteen minutes. Refresh tokens are rotated and revocable.
 Android encrypts the refresh token with an AES-GCM key stored in Android Keystore.
+Admin-authenticated device revocation marks the device and all of its existing auth
+tokens revoked; subsequent access-token authentication and refresh attempts fail.
 When refresh fails with a revoked or expired token, Android clears the stale device
 credentials, keeps the last server URL in the pairing form, and requires a fresh one-use
 pairing code.

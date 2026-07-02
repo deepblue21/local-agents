@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
-import re
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -65,29 +66,64 @@ def search_files(arguments: dict) -> dict:
     query = str(arguments.get("query", ""))
     if not query or len(query) > 500:
         raise HTTPException(400, "query is required and must be under 500 characters")
-    try:
-        pattern = re.compile(query)
-    except re.error as exc:
-        raise HTTPException(400, f"invalid regular expression: {exc}") from exc
     base = safe_path(str(arguments.get("path", ".")))
+    if not base.is_dir():
+        raise HTTPException(400, "path is not a directory")
+    command = [
+        "rg",
+        "--json",
+        "--line-number",
+        "--max-filesize",
+        "1M",
+        "--glob",
+        "!.git",
+        "--",
+        query,
+        str(base),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=WORKSPACE,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(503, "ripgrep executable not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(408, "search timed out") from exc
+    if result.returncode == 2:
+        detail = result.stderr.strip() or "invalid regular expression"
+        raise HTTPException(400, detail)
+    if result.returncode not in {0, 1}:
+        detail = result.stderr.strip() or "search failed"
+        raise HTTPException(500, detail)
     matches = []
-    for path in base.rglob("*"):
+    for line in result.stdout.splitlines():
         if len(matches) >= 200:
             break
-        if not path.is_file() or ".git" in path.parts or path.stat().st_size > MAX_TEXT_BYTES:
-            continue
         try:
-            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-                if pattern.search(line):
-                    matches.append({
-                        "path": path.relative_to(WORKSPACE).as_posix(),
-                        "line": number,
-                        "text": line[:500],
-                    })
-                    if len(matches) >= 200:
-                        break
-        except (UnicodeDecodeError, OSError):
+            event = json.loads(line)
+        except json.JSONDecodeError:
             continue
+        if event.get("type") != "match":
+            continue
+        data = event.get("data", {})
+        path = Path(data.get("path", {}).get("text", ""))
+        text = data.get("lines", {}).get("text", "").rstrip("\r\n")
+        try:
+            relative = path.resolve().relative_to(WORKSPACE).as_posix()
+        except (OSError, ValueError):
+            continue
+        matches.append({
+            "path": relative,
+            "line": int(data.get("line_number", 0)),
+            "text": text[:500],
+        })
     return {"ok": True, "matches": matches, "truncated": len(matches) >= 200}
 
 
@@ -125,13 +161,16 @@ async def run_command(arguments: dict) -> dict:
         "LANG": "C.UTF-8",
         "NO_COLOR": "1",
     }
-    process = await asyncio.create_subprocess_exec(
-        *argv,
-        cwd=cwd,
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=cwd,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(400, f"executable not found: {argv[0]}") from exc
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except TimeoutError:

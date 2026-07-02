@@ -11,6 +11,11 @@ companion refuses insecure admin tokens unless explicitly overridden for isolate
 development, rate-limits auth-adjacent routes per client/path, disables public OpenAPI
 docs, and emits browser security headers.
 
+**Progress note (2026-07-02):** M3, M4, and M8 are now addressed in code. Admins can
+list and revoke paired devices through HTTP; revocation invalidates both access and
+refresh tokens. Runner file search delegates untrusted patterns to ripgrep's linear-time
+regex engine with a timeout, and missing executables now return a controlled `400`.
+
 This project's threat model is unusually sharp: a phone on the public internet drives an
 LLM agent that can **read, write, and execute commands** on the operator's PC. The design
 is sound — a hardened runner, hashed one-use pairing codes, rotating tokens — but several
@@ -28,12 +33,12 @@ gaps would matter the moment the service is exposed through the Cloudflare tunne
 | H4 | High | Runner | Arbitrary command execution — container hardening is the only boundary |
 | M1 | Medium | Server | OpenAPI docs (`/docs`, `/redoc`, `/openapi.json`) exposed without auth |
 | M2 | Medium | Server | No HTTP security headers; admin page is framable (clickjacking) |
-| M3 | Medium | Runner | ReDoS: untrusted regex in `search_files` has no timeout / linear-time engine |
-| M4 | Medium | Server | No device/token revocation or listing API (lost phone can't be deauthorized) |
+| M3 | Medium | Runner | Resolved: `search_files` uses ripgrep with timeout instead of Python `re` |
+| M4 | Medium | Server | Resolved: admin device listing and revocation API |
 | M5 | Medium | Server | Coarse authorization — every paired device sees all sessions and runs |
 | M6 | Medium | Server / DB | Unbounded growth: expired tokens, used codes, and events are never purged |
 | M7 | Medium | Android | Resolved: cleartext scoped by `network_security_config`; pinning optional |
-| M8 | Medium | Runner | `run_command` leaks an uncaught `FileNotFoundError` as a 500 |
+| M8 | Medium | Runner | Resolved: missing executable returns controlled `400` |
 | M9 | Medium | Server | SSE stream has no per-device cap and polls the DB every 0.3 s |
 | L1 | Low | Build | `langgraph` / `langgraph-checkpoint-sqlite` declared but never imported |
 | L2 | Low | Build | No dependency lockfile / `pip-audit` |
@@ -142,7 +147,7 @@ The admin page can be framed (clickjacking), and there is no `X-Content-Type-Opt
 `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, an HSTS header (tunnel is HTTPS),
 and a restrictive CSP on `/admin` (the page is fully inline).
 
-### M3 — ReDoS in `search_files`
+### M3 — ReDoS in `search_files` — resolved
 `runner/runner_app/main.py:64`
 
 The user-supplied regex is compiled and run line-by-line against every workspace file with
@@ -150,11 +155,11 @@ no time budget. Python's `re` is a backtracking engine; a pattern like `(a+)+$` 
 long line causes catastrophic backtracking and pegs the runner CPU (DoS of the single active
 run). Input is partially bounded (query ≤ 500 chars, files ≤ 1 MB) but match time is not.
 
-**Fix:** run searches with `google-re2` (linear time, no backtracking) for untrusted
-patterns, or enforce a wall-clock budget, or delegate to the already-installed `ripgrep`
-binary. See `docs/RESEARCH.md` §ReDoS.
+**Fix:** resolved by delegating searches to the already-installed `ripgrep` binary with
+JSON output and a wall-clock timeout. Invalid regexes return `400`; no matches return an
+empty result.
 
-### M4 — No device/token revocation or listing API
+### M4 — No device/token revocation or listing API — resolved
 `server/local_agents/database.py` (schema has `devices.revoked_at`, `auth_tokens.revoked_at`)
 
 `docs/ARCHITECTURE.md` states tokens are "rotated and revocable," and the auth/refresh
@@ -162,9 +167,9 @@ queries **do** enforce revocation (pinned by `test_revoked_device_cannot_authent
 But no HTTP endpoint lists paired devices or revokes one. A lost or compromised phone can
 only be deauthorized by hand-editing SQLite.
 
-**Fix:** add admin-authenticated `GET /api/v1/admin/devices` and
-`POST /api/v1/admin/devices/{id}/revoke` (set `devices.revoked_at`; optionally revoke that
-device's tokens).
+**Fix:** resolved with admin-authenticated `GET /api/v1/admin/devices` and
+`POST /api/v1/admin/devices/{id}/revoke`. Revocation sets `devices.revoked_at` and marks
+that device's existing auth tokens revoked.
 
 ### M5 — Coarse authorization: every device sees everything
 `server/local_agents/app.py` — routes depend on `bearer_device` purely as a gate and discard
@@ -194,13 +199,13 @@ and Tailscale test ergonomics.
 **Remaining hardening:** certificate pinning for a production tunnel domain is still an
 optional future step.
 
-### M8 — `run_command` leaks `FileNotFoundError` as a 500
+### M8 — `run_command` leaks `FileNotFoundError` as a 500 — resolved
 `runner/runner_app/main.py:128` — `create_subprocess_exec` runs *before* the `try/except`
 around `communicate()`, so a non-existent binary raises an uncaught `FileNotFoundError` and
 returns an opaque `500` instead of a structured tool error.
 
-**Fix:** wrap the spawn in `try/except FileNotFoundError` and return
-`{"ok": false, "error": "executable not found"}` (or `HTTPException(400)`).
+**Fix:** resolved by wrapping process spawn and returning `HTTPException(400)` with an
+`executable not found` message.
 
 ### M9 — SSE has no per-device cap and polls every 0.3 s
 `server/local_agents/app.py:198` — each `/runs/{id}/events` connection holds an open
@@ -263,7 +268,5 @@ so regressions surface immediately:
    exposure reduction before any tunnel goes live).
 2. **M1 + M2** — disable public docs, add security headers.
 3. **H3 + M7** — Android pairing confirmation + App Links + cleartext policy.
-4. **M4** — device revocation API (operational must-have for a lost phone).
-5. **M3 + M8** — runner ReDoS mitigation and clean command errors.
-6. **H4 hardening** — seccomp/AppArmor profile and documented runner threat model.
-7. **M5, M6, M9, L1–L7** — authorization scoping, retention, and build/CI hygiene.
+4. **H4 hardening** — seccomp/AppArmor profile and documented runner threat model.
+5. **M5, M6, M9, L1–L7** — authorization scoping, retention, and build/CI hygiene.

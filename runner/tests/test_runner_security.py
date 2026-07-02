@@ -115,6 +115,23 @@ def test_search_files_rejects_overlong_query(workspace):
         main.search_files({"query": "a" * 501})
 
 
+def test_search_files_uses_ripgrep_instead_of_python_regex(workspace, monkeypatch):
+    (workspace / "f.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    original_run = main.subprocess.run
+    calls = []
+
+    def capture_run(command, *args, **kwargs):
+        calls.append(command)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(main.subprocess, "run", capture_run)
+    result = main.search_files({"query": "alpha", "path": "."})
+    assert result["ok"] is True
+    assert calls and calls[0][0] == "rg"
+    assert result["matches"][0]["line"] == 1
+    assert result["matches"][0]["text"] == "alpha"
+
+
 # --- run_command --------------------------------------------------------------
 
 async def test_run_command_executes_and_captures_output(workspace):
@@ -140,6 +157,13 @@ async def test_run_command_times_out(workspace):
             {"argv": [sys.executable, "-c", "import time; time.sleep(5)"], "timeout_seconds": 1}
         )
     assert exc.value.status_code == 408
+
+
+async def test_run_command_reports_missing_executable_as_bad_request(workspace):
+    with pytest.raises(HTTPException) as exc:
+        await main.run_command({"argv": ["local-agents-definitely-missing-command"]})
+    assert exc.value.status_code == 400
+    assert "executable not found" in str(exc.value.detail)
 
 
 # --- tool allowlist at the schema layer --------------------------------------

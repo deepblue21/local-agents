@@ -7,6 +7,14 @@ data class ConnectionSettings(
     val deviceId: String = "",
 )
 
+data class AdminDevice(
+    val id: String,
+    val name: String,
+    val createdAt: String,
+    val lastSeenAt: String,
+    val revokedAt: String? = null,
+)
+
 data class AgentSession(
     val id: String,
     val title: String,

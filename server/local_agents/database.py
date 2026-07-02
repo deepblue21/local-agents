@@ -172,6 +172,35 @@ class Database:
             conn.execute("UPDATE devices SET last_seen_at=? WHERE id=?", (now.isoformat(), row["device_id"]))
             return row["device_id"]
 
+    def get_device(self, device_id: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+            return dict(row) if row else None
+
+    def list_devices(self) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM devices ORDER BY last_seen_at DESC, created_at DESC"
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def revoke_device(self, device_id: str) -> dict | None:
+        now = now_iso()
+        with self._write_lock, self.connect() as conn:
+            row = conn.execute("SELECT revoked_at FROM devices WHERE id=?", (device_id,)).fetchone()
+            if not row:
+                return None
+            revoked_at = row["revoked_at"] or now
+            conn.execute(
+                "UPDATE devices SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
+                (revoked_at, device_id),
+            )
+            conn.execute(
+                "UPDATE auth_tokens SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL",
+                (revoked_at, device_id),
+            )
+        return self.get_device(device_id)
+
     def create_session(self, title: str) -> dict:
         session_id = str(uuid.uuid4())
         timestamp = now_iso()

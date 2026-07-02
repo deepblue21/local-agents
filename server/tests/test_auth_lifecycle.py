@@ -165,3 +165,43 @@ def test_revoked_device_cannot_authenticate_or_refresh(tmp_path):
         assert client.post(
             "/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
         ).status_code == 401
+
+
+def test_admin_can_list_and_revoke_devices(tmp_path):
+    app = create_app(make_settings(tmp_path))
+    with TestClient(app) as client:
+        first_code = issue_pairing(client).json()["code"]
+        first_tokens = client.post(
+            "/api/v1/pair/exchange", json={"code": first_code, "device_name": "Pixel"}
+        ).json()
+        second_code = issue_pairing(client).json()["code"]
+        second_tokens = client.post(
+            "/api/v1/pair/exchange", json={"code": second_code, "device_name": "Tablet"}
+        ).json()
+        admin_headers = {"X-Admin-Token": ADMIN}
+        first_auth = {"Authorization": f"Bearer {first_tokens['access_token']}"}
+        second_auth = {"Authorization": f"Bearer {second_tokens['access_token']}"}
+
+        assert client.get("/api/v1/admin/devices").status_code == 401
+        listed = client.get("/api/v1/admin/devices", headers=admin_headers)
+        assert listed.status_code == 200
+        devices = listed.json()
+        assert {device["name"] for device in devices} == {"Pixel", "Tablet"}
+        pixel = next(device for device in devices if device["name"] == "Pixel")
+        assert pixel["revoked_at"] is None
+
+        revoked = client.post(
+            f"/api/v1/admin/devices/{pixel['id']}/revoke", headers=admin_headers
+        )
+        assert revoked.status_code == 200
+        assert revoked.json()["id"] == pixel["id"]
+        assert revoked.json()["revoked_at"] is not None
+
+        assert client.get("/api/v1/sessions", headers=first_auth).status_code == 401
+        assert client.post(
+            "/api/v1/auth/refresh", json={"refresh_token": first_tokens["refresh_token"]}
+        ).status_code == 401
+        assert client.get("/api/v1/sessions", headers=second_auth).status_code == 200
+
+        missing = client.post("/api/v1/admin/devices/missing/revoke", headers=admin_headers)
+        assert missing.status_code == 404

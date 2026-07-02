@@ -20,6 +20,7 @@ from .database import Database
 from .models import (
     ContextCompress,
     EventOut,
+    DeviceOut,
     ModelOut,
     PairingExchange,
     PairingOut,
@@ -181,6 +182,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             pairing_uri=uri,
             qr_data_url=_qr_data_url(uri),
         )
+
+    @app.get(
+        "/api/v1/admin/devices",
+        response_model=list[DeviceOut],
+        dependencies=[Depends(auth_rate_limited), Depends(require_admin)],
+    )
+    async def list_devices() -> list[dict]:
+        return db.list_devices()
+
+    @app.post(
+        "/api/v1/admin/devices/{device_id}/revoke",
+        response_model=DeviceOut,
+        dependencies=[Depends(auth_rate_limited), Depends(require_admin)],
+    )
+    async def revoke_device(device_id: str) -> dict:
+        device = db.revoke_device(device_id)
+        if not device:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "device not found")
+        return device
 
     @app.post("/api/v1/pair/exchange", response_model=TokenBundle)
     async def pair(
