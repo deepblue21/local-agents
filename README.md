@@ -12,6 +12,27 @@ runs, and reconnect to persisted history after losing network access.
 - `infra/`: Cloudflare Tunnel and container configuration.
 - `scripts/`: Windows development helpers.
 
+## Relationship to Nova Agent
+
+Local_Agents is designed to work alongside the separate Nova Agent project. Think of
+Local_Agents as the mobile control plane: the Android app pairs with this companion API,
+starts or controls runs, watches persisted events, and exposes widgets. Nova Agent remains
+the PC-side model/runtime surface when its OpenAI-compatible gateway is enabled.
+
+The connection is intentionally one-way and credential-safe. Android never receives Nova
+provider credentials or gateway secrets. The Local_Agents companion reads
+`LOCAL_AGENTS_NOVA_URL` and `LOCAL_AGENTS_NOVA_TOKEN` from its local `.env`, talks to the
+Nova gateway as an additional `nova` model provider, and streams the result back to the
+phone through the same replayable run/event API used for Ollama.
+
+Use `scripts\connect-nova.ps1` to wire the two projects together. The helper reads the
+Nova gateway token from the sibling Nova checkout (default:
+`C:\Users\salih\Nova_Agent_AI\gateway\.env`) and writes only the Local_Agents-side
+connection values into this repo's `.env`. With `-StartGateway`, it can also start the
+Nova gateway and point it at the WSL Ollama service. Plain Nova chat does not get host
+filesystem access; file tools still run only in the isolated Local_Agents runner mounted
+to `LOCAL_AGENTS_WORKSPACE`.
+
 ## Quick start
 
 1. Copy `.env.example` to `.env` and set the admin token and public URL.
