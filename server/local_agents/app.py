@@ -72,6 +72,31 @@ class EventStreamLimiter:
                 self._active[device_id] = active - 1
 
 
+class RunEventNotifier:
+    def __init__(self):
+        self._versions: dict[str, int] = {}
+        self._events: dict[str, asyncio.Event] = {}
+
+    def version(self, run_id: str) -> int:
+        return self._versions.get(run_id, 0)
+
+    def notify(self, run_id: str) -> None:
+        self._versions[run_id] = self.version(run_id) + 1
+        event = self._events.pop(run_id, None)
+        if event:
+            event.set()
+
+    async def wait_for_change(self, run_id: str, version: int, timeout: float) -> bool:
+        if self.version(run_id) != version:
+            return True
+        event = self._events.setdefault(run_id, asyncio.Event())
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+        except TimeoutError:
+            return self.version(run_id) != version
+        return True
+
+
 def _qr_data_url(value: str) -> str:
     image = qrcode.make(value)
     output = io.BytesIO()
@@ -92,6 +117,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         timeout_seconds=cfg.web_search_timeout_seconds,
         allow_private_fetch=cfg.web_fetch_allow_private,
     )
+    run_event_notifier = RunEventNotifier()
     manager = AgentManager(
         db,
         RunnerClient(cfg.runner_socket),
@@ -99,6 +125,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cfg.default_model,
         web_tools=web_tools,
         context_window_tokens=cfg.context_window_tokens,
+        on_event=run_event_notifier.notify,
     )
 
     @asynccontextmanager
@@ -123,6 +150,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = cfg
     app.state.db = db
     app.state.manager = manager
+    app.state.run_event_notifier = run_event_notifier
     auth_rate_limiter = InMemoryRateLimiter(cfg.auth_rate_limit_per_minute)
     event_stream_limiter = EventStreamLimiter(cfg.sse_streams_per_device)
     app.state.event_stream_limiter = event_stream_limiter
@@ -388,6 +416,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             body.model or cfg.default_model,
             body.provider,
         )
+        run_event_notifier.notify(run["id"])
         manager.notify()
         return run
 
@@ -432,7 +461,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         async def stream():
             cursor = max(0, last_event_id or 0)
-            idle_ticks = 0
             last_reauth = 0.0
             try:
                 while True:
@@ -443,12 +471,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         last_reauth = current_time
                         if db.authenticate(auth.token) != auth.device_id:
                             return
+                    version = run_event_notifier.version(run_id)
                     rows = db.list_events(run_id, cursor)
                     for row in rows:
                         cursor = row["seq"]
                         payload = EventOut(**row).model_dump(mode="json")
                         yield f"id: {cursor}\nevent: {row['type']}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                        idle_ticks = 0
                     run = db.get_run(run_id)
                     if run and RunStatus(run["status"]) in {
                         RunStatus.COMPLETED,
@@ -456,11 +484,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         RunStatus.CANCELLED,
                     } and not db.list_events(run_id, cursor):
                         return
-                    idle_ticks += 1
-                    if idle_ticks >= 50:
+                    reauth_due_in = max(0.1, cfg.sse_reauth_seconds - (monotonic() - last_reauth))
+                    if not await run_event_notifier.wait_for_change(
+                        run_id,
+                        version,
+                        timeout=min(15.0, reauth_due_in),
+                    ):
                         yield ": heartbeat\n\n"
-                        idle_ticks = 0
-                    await asyncio.sleep(0.3)
             finally:
                 await release_event_stream(auth.device_id)
 

@@ -34,6 +34,12 @@ messages, context, commands, and event streams. New sessions are owned by the pa
 device that creates them, and all controller routes filter by that owner. Existing legacy
 sessions are assigned to the sole active device during migration when that is unambiguous.
 
+**Progress note (2026-07-03, third pass):** L2 is partially addressed and M9 is fully
+addressed. CI now installs `pip-audit` and fails the Python job on vulnerable server/runner
+dependency sets; a deterministic lockfile remains a separate release hardening follow-up.
+SSE live tails now wake through an in-process run-event notifier instead of a fixed DB
+polling loop.
+
 This project's threat model is unusually sharp: a phone on the public internet drives an
 LLM agent that can **read, write, and execute commands** on the operator's PC. The design
 is sound — a hardened runner, hashed one-use pairing codes, rotating tokens — but several
@@ -57,9 +63,9 @@ gaps would matter the moment the service is exposed through the Cloudflare tunne
 | M6 | Medium | Server / DB | Resolved: startup retention cleanup purges expired/used auth artifacts and old terminal events |
 | M7 | Medium | Android | Resolved: cleartext scoped by `network_security_config`; pinning optional |
 | M8 | Medium | Runner | Resolved: missing executable returns controlled `400` |
-| M9 | Medium | Server | Partially resolved: per-device stream cap and token revalidation added; DB polling remains |
+| M9 | Medium | Server | Resolved: per-device stream cap, token revalidation, and in-process event notification |
 | L1 | Low | Build | Resolved: unused LangGraph dependencies removed |
-| L2 | Low | Build | No dependency lockfile / `pip-audit` |
+| L2 | Low | Build | Partially resolved: `pip-audit` runs in CI; deterministic lockfile pending |
 | L3 | Low | CI | Resolved: GitHub Actions runs Python lint/tests and Android unit tests |
 | L4 | Low | Infra | Resolved: Compose healthchecks and `service_healthy` dependencies added |
 | L5 | Low | Server | Resolved: unexpected agent/tool exceptions use generic user-facing errors |
@@ -240,7 +246,7 @@ returns an opaque `500` instead of a structured tool error.
 **Fix:** resolved by wrapping process spawn and returning `HTTPException(400)` with an
 `executable not found` message.
 
-### M9 — SSE has no per-device cap and polls every 0.3 s
+### M9 — SSE has no per-device cap and polls every 0.3 s — resolved
 `server/local_agents/app.py:198` — each `/runs/{id}/events` connection holds an open
 streaming response and re-queries the DB every 300 ms. Many reconnecting clients multiply
 open connections and DB reads.
@@ -248,9 +254,9 @@ open connections and DB reads.
 **Fix:** cap concurrent streams per device; longer term, replace polling with an in-process
 notify/condition so events push instead of being polled.
 
-**Status:** per-device stream caps and periodic token revalidation are implemented. The
-remaining improvement is replacing the 300 ms DB polling loop with an in-process
-notify/condition.
+**Status:** resolved. Per-device stream caps and periodic token revalidation are
+implemented. Live tails now use an in-process run-event notifier, so new agent/command
+events wake the stream without a fixed 300 ms DB polling loop.
 
 ---
 
@@ -258,8 +264,8 @@ notify/condition.
 
 - **L1** — Resolved: `langgraph` and `langgraph-checkpoint-sqlite` were removed from
   `pyproject.toml` and `requirements.txt`; the agent loop remains hand-rolled.
-- **L2** — Dependencies are range-pinned with no lockfile and no `pip-audit`. Add a lock
-  (uv / pip-tools) and a vulnerability scan.
+- **L2** — Partially resolved: CI runs `pip-audit` against the server dev dependency set
+  and runner requirements. Remaining: add a deterministic lockfile with uv or pip-tools.
 - **L3** — Resolved: `.github/workflows/ci.yml` runs server/runner `ruff`, Python tests, and
   Android `testDebugUnitTest`.
 - **L4** — Resolved: API and runner healthchecks are wired, and API/cloudflared wait for
@@ -297,6 +303,10 @@ so regressions surface immediately:
   tool name is allowlisted at the schema layer. (`test_runner_security`)
 - SSE **replays** persisted events for a finished run and honours `Last-Event-ID` on reconnect.
   (`test_sse_events`)
+- SSE live tails wake from an in-process run-event notifier, and `AgentManager` notifies
+  when it persists run events. (`test_sse_events`, `test_agent_loop`)
+- GitHub Actions runs `pip-audit` against the Python server and runner dependency sets.
+  (`test_infra_config`, `test_dependencies`)
 
 ---
 
@@ -307,4 +317,4 @@ so regressions surface immediately:
 2. **M1 + M2** — disable public docs, add security headers.
 3. **H3 remaining** — verified Android App Links + production tunnel domain allowlist.
 4. **H4 remaining** — evaluate gVisor/AppArmor or a microVM for the runner trust boundary.
-5. **L2** — dependency lock/audit.
+5. **L2 remaining** — deterministic dependency lockfile.

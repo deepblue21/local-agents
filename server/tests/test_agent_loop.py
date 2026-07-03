@@ -273,6 +273,23 @@ async def test_steer_command_is_stored_and_consumed_once(tmp_path):
     assert "steering.accepted" in event_types(db, run["id"])
 
 
+async def test_agent_manager_notifies_when_events_are_persisted(tmp_path):
+    db = make_db(tmp_path)
+    run = seed_run(db)
+    notified: list[str] = []
+    manager = AgentManager(
+        db,
+        FakeRunner(),
+        {"ollama": ScriptedAdapter([[]])},
+        "qwen3",
+        on_event=notified.append,
+    )
+
+    await manager.command(run["id"], CommandType.STEER, "focus on tests")
+
+    assert notified == [run["id"]]
+
+
 async def test_steer_requires_instruction(tmp_path):
     db = make_db(tmp_path)
     run = seed_run(db)

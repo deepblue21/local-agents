@@ -21,3 +21,11 @@ def test_github_actions_runs_server_runner_and_android_unit_tests():
     assert "ruff check . ../runner" in workflow
     assert "pytest -q" in workflow
     assert "testDebugUnitTest" in workflow
+
+
+def test_github_actions_audits_python_dependencies():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert "pip-audit" in workflow
+    assert "requirements-dev.txt" in workflow
+    assert "../runner/requirements.txt" in workflow

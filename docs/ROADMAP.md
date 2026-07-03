@@ -224,6 +224,12 @@ Tamamlananlar:
   Session/run listeleme, mesaj/context okuma, run oluşturma, run kontrol komutları ve SSE
   event stream erişimi `owner_device_id` ile filtrelenir. İkinci cihaz başka cihazın
   session/run ID'lerine `404` alır.
+- **Güvenlik sertleştirme — L2 ilk geçiş** — GitHub Actions Python job'ı artık
+  `pip-audit` kurar ve server/runner dependency setinde bilinen güvenlik açığı bulursa
+  CI'ı düşürür. Kalan parça deterministik lockfile üretimi.
+- **Reliability — M9 final** — SSE live tail artık 300 ms DB polling yerine in-process
+  run-event notifier ile uyanır; replay garantisi DB'den korunur, canlı eventler push
+  benzeri şekilde stream'e düşer.
 
 Kalan büyük dış-servis parçası: app tamamen kapalıyken server-initiated push için
 Firebase/FCM project credentials ve companion-side push token akışı.
@@ -248,15 +254,14 @@ Firebase/FCM project credentials ve companion-side push token akışı.
   seccomp deny profili, retention cleanup, SSE stream cap/revalidation ve deep-link host
   onayı. Kalan: verified Android App Links (`https` + `assetlinks.json` +
   `android:autoVerify`), üretim tunnel/domain allowlist, gVisor/AppArmor veya microVM
-  değerlendirmesi, dependency lock + `pip-audit`, Cloudflare Access opsiyonel admin/API
-  perimetresi. Cihaz/oturum sahipliği scoping'i tamamlandı.
+  değerlendirmesi, deterministik dependency lockfile, Cloudflare Access opsiyonel admin/API
+  perimetresi. Cihaz/oturum sahipliği scoping'i ve `pip-audit` CI taraması tamamlandı.
 - **Faz 7 — Reliability & observability.** Kalan büyük dış servis işi FCM'dir: Firebase
   project credentials, Android push token kaydı, companion-side push credential flow ve
   app process'i kapalıyken run tamamlandı/başarısız push'u. Repo içi sonraki işler:
-  WorkManager tabanlı widget/snapshot refresh, SSE polling yerine in-process
-  notify/condition, OpenTelemetry GenAI uyumlu trace/event/metrik modeli, token/maliyet
-  yüzeyi, run transcript export/share (chain-of-thought olmadan) ve provider fallback
-  politikaları.
+  WorkManager tabanlı widget/snapshot refresh, OpenTelemetry GenAI uyumlu trace/event/metrik
+  modeli, token/maliyet yüzeyi, run transcript export/share (chain-of-thought olmadan) ve
+  provider fallback politikaları.
 
 ## 9. Kaynaklar
 

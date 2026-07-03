@@ -7,9 +7,11 @@ the backbone of the "a phone disconnect never loses a run" guarantee.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi.testclient import TestClient
 
-from local_agents.app import EventStreamLimiter, create_app
+from local_agents.app import EventStreamLimiter, RunEventNotifier, create_app
 from local_agents.config import Settings
 from local_agents.models import RunStatus
 
@@ -128,3 +130,20 @@ async def test_event_stream_limiter_caps_and_releases_per_device():
     await limiter.release("device-1")
 
     assert await limiter.acquire("device-1") is True
+
+
+async def test_run_event_notifier_wakes_only_for_matching_run():
+    notifier = RunEventNotifier()
+    version = notifier.version("run-1")
+    waiter = asyncio.create_task(notifier.wait_for_change("run-1", version, timeout=1.0))
+
+    await asyncio.sleep(0)
+    assert waiter.done() is False
+
+    notifier.notify("run-2")
+    await asyncio.sleep(0)
+    assert waiter.done() is False
+
+    notifier.notify("run-1")
+
+    assert await asyncio.wait_for(waiter, timeout=0.1) is True

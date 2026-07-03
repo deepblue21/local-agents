@@ -39,8 +39,8 @@ Each event has a monotonically increasing sequence. Android reconnects with
 Event streams are capped per device by `LOCAL_AGENTS_SSE_STREAMS_PER_DEVICE` and long-lived
 streams periodically revalidate the bearer token using `LOCAL_AGENTS_SSE_REAUTH_SECONDS`.
 If the token expires or the device is revoked, the stream ends and Android must refresh or
-pair again. The live tail still uses a lightweight DB polling loop; replacing it with an
-in-process notify/condition is the next reliability improvement.
+pair again. Replay reads persisted SQLite rows; the live tail wakes through an in-process
+run-event notifier when `AgentManager` persists new run events.
 
 Sessions are owned by the paired device that created them. Run ownership is inherited
 through the session. Session/run lists, message reads, context reads/compression, run
@@ -126,8 +126,9 @@ optional Cloudflare Tunnel wait for healthy dependencies. The runner also uses
 `mount`, `unshare`, `keyctl`, `bpf`, and `perf_event_open`.
 
 This seccomp profile is compatibility-first hardening, not the final isolation boundary.
-For production exposure, evaluate gVisor/AppArmor or a microVM runner, plus dependency
-lock/audit and optional Cloudflare Access in front of admin/public tunnel routes.
+For production exposure, evaluate gVisor/AppArmor or a microVM runner, add a deterministic
+dependency lockfile, and consider optional Cloudflare Access in front of admin/public tunnel
+routes. CI already runs `pip-audit` for the Python server/runner dependency sets.
 
 ## Notifications
 

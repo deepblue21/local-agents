@@ -27,6 +27,9 @@ jobs:
       - name: Lint
         working-directory: server
         run: ruff check . ../runner
+      - name: Dependency audit
+        working-directory: server
+        run: pip-audit -r requirements-dev.txt -r ../runner/requirements.txt --strict --progress-spinner off
       - name: Test
         working-directory: server
         run: pytest -q

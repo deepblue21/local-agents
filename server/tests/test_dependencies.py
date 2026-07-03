@@ -15,3 +15,9 @@ def test_server_dependencies_do_not_include_unused_langgraph_packages():
     for path in files:
         content = path.read_text(encoding="utf-8").lower()
         assert "langgraph" not in content
+
+
+def test_dev_dependencies_include_vulnerability_audit_tool():
+    requirements = (ROOT / "server/requirements-dev.txt").read_text(encoding="utf-8")
+
+    assert "pip-audit" in requirements

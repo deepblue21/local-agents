@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from collections.abc import Callable
 
 from .adapters.base import ModelAdapter
 from .context import build_model_messages, context_stats, estimate_message_tokens
@@ -32,6 +33,7 @@ class AgentManager:
         default_model: str,
         web_tools: WebToolClient | None = None,
         context_window_tokens: int = 8192,
+        on_event: Callable[[str], None] | None = None,
     ):
         self.db = db
         self.runner = runner
@@ -39,6 +41,7 @@ class AgentManager:
         self.default_model = default_model
         self.web_tools = web_tools
         self.context_window_tokens = context_window_tokens
+        self._on_event = on_event or (lambda _: None)
         self._wake = asyncio.Event()
         self._worker: asyncio.Task | None = None
         self._active: dict[str, asyncio.Task] = {}
@@ -59,6 +62,11 @@ class AgentManager:
     def notify(self) -> None:
         self._wake.set()
 
+    def _add_event(self, run_id: str, event_type: str, payload: dict) -> int:
+        seq = self.db.add_event(run_id, event_type, payload)
+        self._on_event(run_id)
+        return seq
+
     async def command(self, run_id: str, command: CommandType, instruction: str | None) -> dict:
         run = self.db.get_run(run_id)
         if not run:
@@ -68,25 +76,25 @@ class AgentManager:
             return run
         if command == CommandType.CANCEL:
             self.db.set_run_status(run_id, RunStatus.CANCELLED)
-            self.db.add_event(run_id, "run.cancelled", {})
+            self._add_event(run_id, "run.cancelled", {})
             task = self._active.get(run_id)
             if task:
                 task.cancel()
         elif command == CommandType.PAUSE:
             self.db.set_run_status(run_id, RunStatus.PAUSED)
-            self.db.add_event(run_id, "run.paused", {"mode": "after_current_step"})
+            self._add_event(run_id, "run.paused", {"mode": "after_current_step"})
         elif command == CommandType.RESUME:
             if run_id not in self._active:
                 self.db.set_run_status(run_id, RunStatus.QUEUED)
             else:
                 self.db.set_run_status(run_id, RunStatus.RUNNING)
-            self.db.add_event(run_id, "run.resumed", {})
+            self._add_event(run_id, "run.resumed", {})
             self.notify()
         elif command == CommandType.STEER:
             if not instruction or not instruction.strip():
                 raise ValueError("steer requires an instruction")
             self.db.set_steering(run_id, instruction.strip())
-            self.db.add_event(run_id, "steering.accepted", {"instruction": instruction.strip()})
+            self._add_event(run_id, "steering.accepted", {"instruction": instruction.strip()})
         return self.db.get_run(run_id)
 
     def context_status(self, session_id: str) -> dict:
@@ -170,12 +178,12 @@ class AgentManager:
         adapter = self.adapters.get(run["provider"])
         if not adapter:
             self.db.set_run_status(run_id, RunStatus.FAILED, "provider unavailable")
-            self.db.add_event(run_id, "run.failed", {"error": "provider unavailable"})
+            self._add_event(run_id, "run.failed", {"error": "provider unavailable"})
             return
         self.db.set_run_status(run_id, RunStatus.RUNNING)
-        self.db.add_event(run_id, "run.started", {"model": run["model"]})
+        self._add_event(run_id, "run.started", {"model": run["model"]})
         messages = self._model_messages(run["session_id"])
-        self.db.add_event(run_id, "context.status", self.context_status(run["session_id"]))
+        self._add_event(run_id, "context.status", self.context_status(run["session_id"]))
         try:
             final_text = await self._agent_loop(run, adapter, messages)
             current = self.db.get_run(run_id)
@@ -183,18 +191,18 @@ class AgentManager:
                 return
             self.db.add_message(run["session_id"], "assistant", final_text)
             self.db.set_run_status(run_id, RunStatus.COMPLETED)
-            self.db.add_event(run_id, "assistant.final", {"content": final_text})
-            self.db.add_event(run_id, "run.completed", {})
+            self._add_event(run_id, "assistant.final", {"content": final_text})
+            self._add_event(run_id, "run.completed", {})
         except asyncio.CancelledError:
             raise
         except AgentPublicError as exc:
             message = str(exc)
             self.db.set_run_status(run_id, RunStatus.FAILED, message)
-            self.db.add_event(run_id, "run.failed", {"error": message})
+            self._add_event(run_id, "run.failed", {"error": message})
         except Exception as exc:
             logger.exception("Agent run %s failed", run_id)
             self.db.set_run_status(run_id, RunStatus.FAILED, GENERIC_AGENT_ERROR)
-            self.db.add_event(
+            self._add_event(
                 run_id,
                 "run.failed",
                 {"error": GENERIC_AGENT_ERROR, "error_type": exc.__class__.__name__},
@@ -227,10 +235,10 @@ class AgentManager:
                     raise asyncio.CancelledError
                 if chunk.thinking and not thinking_started:
                     thinking_started = True
-                    self.db.add_event(run_id, "run.thinking", {"active": True})
+                    self._add_event(run_id, "run.thinking", {"active": True})
                 if chunk.content:
                     content_parts.append(chunk.content)
-                    self.db.add_event(run_id, "assistant.delta", {"content": chunk.content})
+                    self._add_event(run_id, "assistant.delta", {"content": chunk.content})
                 tool_calls.extend(chunk.tool_calls)
             content = "".join(content_parts)
             assistant_message: dict = {"role": "assistant", "content": content}
@@ -247,19 +255,19 @@ class AgentManager:
                 arguments = function.get("arguments") or {}
                 if isinstance(arguments, str):
                     arguments = json.loads(arguments)
-                self.db.add_event(
+                self._add_event(
                     run_id,
                     "tool.started",
                     {"name": name, "arguments": arguments, "round": round_index + 1},
                 )
                 try:
                     result = await self._call_tool(name, arguments)
-                    self.db.add_event(run_id, "tool.finished", {"name": name, "result": result})
+                    self._add_event(run_id, "tool.finished", {"name": name, "result": result})
                     self._add_source_events(run_id, name, result)
                 except Exception as exc:
                     logger.exception("Tool %s failed for run %s", name, run_id)
                     result = {"ok": False, "error": GENERIC_TOOL_ERROR}
-                    self.db.add_event(
+                    self._add_event(
                         run_id,
                         "tool.failed",
                         {
@@ -343,7 +351,7 @@ class AgentManager:
     def _add_source_events(self, run_id: str, tool_name: str, result: dict) -> None:
         if tool_name == "web_search":
             for index, item in enumerate(result.get("results") or [], start=1):
-                self.db.add_event(
+                self._add_event(
                     run_id,
                     "source.found",
                     {
@@ -355,7 +363,7 @@ class AgentManager:
                     },
                 )
         elif tool_name == "fetch_url":
-            self.db.add_event(
+            self._add_event(
                 run_id,
                 "source.fetched",
                 {
