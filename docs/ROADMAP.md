@@ -210,6 +210,12 @@ Tamamlananlar:
   (`GET /api/v1/admin/devices`, `POST /api/v1/admin/devices/{id}/revoke`); revoke mevcut
   access/refresh token'larını geçersiz kılar. Runner `search_files` artık Python `re`
   yerine timeout'lu `ripgrep` kullanır; bulunmayan executable kontrollü `400` döner.
+- **Güvenlik sertleştirme — H3/M6/M9/L3/L4/L6/L7 ilk tur** — Android QR/deep-link
+  eşleştirme artık companion host onayı ister; server startup retention sweep'i expired
+  token, used/expired pairing code ve eski terminal run eventlerini temizler; SSE stream
+  cihaz başına limitlenir ve uzun bağlantılarda token yeniden doğrulanır. GitHub Actions
+  CI, Compose healthcheck/`service_healthy`, server/runner `.dockerignore` durumu ve
+  runner seccomp deny profili eklendi.
 
 Kalan büyük dış-servis parçası: app tamamen kapalıyken server-initiated push için
 Firebase/FCM project credentials ve companion-side push token akışı.
@@ -230,6 +236,19 @@ Firebase/FCM project credentials ve companion-side push token akışı.
   notları, yayın öncesi checklist). Minified R8 release APK ~2.9 MB üretiliyor.
   Kalan: gerçek yükleme anahtarı üretimi, mağaza ekran görüntüleri/gizlilik politikası
   URL'si, cihazda dumanla test, Play App Signing ile gönderim.
+- **Faz 6 — Production hardening.** Kapanan ilk parça: CI, compose healthcheck,
+  seccomp deny profili, retention cleanup, SSE stream cap/revalidation ve deep-link host
+  onayı. Kalan: verified Android App Links (`https` + `assetlinks.json` +
+  `android:autoVerify`), üretim tunnel/domain allowlist, gVisor/AppArmor veya microVM
+  değerlendirmesi, dependency lock + `pip-audit`, Cloudflare Access opsiyonel admin/API
+  perimetresi, cihaz/oturum sahipliği scoping'i ve kullanıcıya dönen generic hata yüzeyi.
+- **Faz 7 — Reliability & observability.** Kalan büyük dış servis işi FCM'dir: Firebase
+  project credentials, Android push token kaydı, companion-side push credential flow ve
+  app process'i kapalıyken run tamamlandı/başarısız push'u. Repo içi sonraki işler:
+  WorkManager tabanlı widget/snapshot refresh, SSE polling yerine in-process
+  notify/condition, OpenTelemetry GenAI uyumlu trace/event/metrik modeli, token/maliyet
+  yüzeyi, run transcript export/share (chain-of-thought olmadan) ve provider fallback
+  politikaları.
 
 ## 9. Kaynaklar
 

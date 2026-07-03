@@ -48,6 +48,10 @@
     <string name="pair_qr_title">QR eşleştirme bağlantısı</string>
     <string name="pair_qr_hint">Telefon kamerasıyla admin panelindeki kodu aç</string>
     <string name="pair_qr_expanded">Kamera localagents://pair bağlantısını açtığında adres ve kod otomatik doldurulur.</string>
+    <string name="pair_link_confirm_title">BAĞLANTI ONAYI</string>
+    <string name="pair_link_confirm_body">QR veya deep link yeni bir companion adresi getirdi. Eşleşmeden önce hostu doğrula.</string>
+    <string name="action_confirm_pair_link">Onayla</string>
+    <string name="action_reject_pair_link">Reddet</string>
     <string name="pair_or_manual">VEYA ELLE</string>
     <string name="label_server_address">SUNUCU ADRESİ</string>
     <string name="label_pairing_code">EŞLEŞTİRME KODU</string>
@@ -120,6 +124,7 @@
     <string name="action_unpair">Eşleştirmeyi kaldır</string>
     <string name="unpair_hint">Bu cihaz host erişimini kaybeder. Çalışma geçmişi PC\'de kalır.</string>
     <string name="error_invalid_server_address">Sunucu adresi geçersiz</string>
+    <string name="error_confirm_pair_link">Önce QR bağlantı adresini onayla.</string>
     <string name="error_session_expired_repair">Oturum süresi doldu. Tekrar eşleştir.</string>
     <string name="error_unexpected">Beklenmeyen bir hata oluştu</string>
     <string name="widget_loading">Yenileniyor</string>

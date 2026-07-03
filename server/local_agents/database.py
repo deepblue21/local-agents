@@ -201,6 +201,52 @@ class Database:
             )
         return self.get_device(device_id)
 
+    def cleanup_retention(
+        self,
+        *,
+        now: datetime | None = None,
+        revoked_token_grace_days: int = 7,
+        run_event_retention_days: int = 30,
+    ) -> dict[str, int]:
+        current = now or datetime.now(UTC)
+        current_iso = current.isoformat()
+        revoked_token_cutoff = (
+            current - timedelta(days=max(0, revoked_token_grace_days))
+        ).isoformat()
+        run_event_cutoff = (
+            current - timedelta(days=max(1, run_event_retention_days))
+        ).isoformat()
+        terminal_statuses = (
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        )
+        with self._write_lock, self.connect() as conn:
+            pairing_cursor = conn.execute(
+                "DELETE FROM pairing_codes WHERE expires_at <= ? OR used_at IS NOT NULL",
+                (current_iso,),
+            )
+            token_cursor = conn.execute(
+                """DELETE FROM auth_tokens
+                   WHERE expires_at <= ?
+                      OR (revoked_at IS NOT NULL AND revoked_at <= ?)""",
+                (current_iso, revoked_token_cutoff),
+            )
+            event_cursor = conn.execute(
+                f"""DELETE FROM run_events
+                    WHERE created_at <= ?
+                      AND run_id IN (
+                        SELECT id FROM runs
+                        WHERE status IN ({','.join('?' for _ in terminal_statuses)})
+                      )""",
+                (run_event_cutoff, *terminal_statuses),
+            )
+        return {
+            "pairing_codes": max(pairing_cursor.rowcount, 0),
+            "auth_tokens": max(token_cursor.rowcount, 0),
+            "run_events": max(event_cursor.rowcount, 0),
+        }
+
     def create_session(self, title: str) -> dict:
         session_id = str(uuid.uuid4())
         timestamp = now_iso()

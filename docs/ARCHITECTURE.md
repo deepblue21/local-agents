@@ -36,6 +36,11 @@ link-local, and other non-public network targets by default to reduce SSRF risk.
 
 Each event has a monotonically increasing sequence. Android reconnects with
 `Last-Event-ID`; the server replays newer rows before tailing live events.
+Event streams are capped per device by `LOCAL_AGENTS_SSE_STREAMS_PER_DEVICE` and long-lived
+streams periodically revalidate the bearer token using `LOCAL_AGENTS_SSE_REAUTH_SECONDS`.
+If the token expires or the device is revoked, the stream ends and Android must refresh or
+pair again. The live tail still uses a lightweight DB polling loop; replacing it with an
+in-process notify/condition is the next reliability improvement.
 
 Common run events:
 
@@ -71,6 +76,10 @@ Pairing codes are random, one-use, hashed at rest, and expire after the configur
 support remote Tailscale testing.
 Codes are displayed in four-character groups for manual entry; the server normalizes
 case and visual separators before comparing the hash.
+QR/deep-link pairing pre-fills the companion URL and code, but Android requires explicit
+host confirmation before the Pair action is enabled when the link introduces a new or
+changed host. Verified Android App Links and production tunnel allowlisting remain planned
+hardening work.
 Access tokens expire after fifteen minutes. Refresh tokens are rotated and revocable.
 Android encrypts the refresh token with an AES-GCM key stored in Android Keystore.
 Admin-authenticated device revocation marks the device and all of its existing auth
@@ -85,6 +94,26 @@ The companion still authenticates every non-health API request independently.
 Android denies cleartext by default through `network_security_config.xml`. Cleartext
 is scoped to emulator/loopback and this PC's Tailscale tailnet host for development
 and remote testing; production/public endpoints should use HTTPS.
+
+## Retention
+
+The companion runs a startup retention sweep after SQLite initialization. It removes
+used or expired pairing codes, expired auth tokens, old revoked tokens, and run events
+older than `LOCAL_AGENTS_RETENTION_RUN_EVENT_DAYS` for terminal runs. Active-run events
+are preserved so phone disconnects still remain replayable. Revoked-token cleanup uses
+`LOCAL_AGENTS_RETENTION_REVOKED_TOKEN_GRACE_DAYS`.
+
+## Deployment hardening
+
+`docker-compose.yml` keeps the runner networkless, read-only, non-root, capability-free,
+and limited by pids/memory/CPU. API and runner services have healthchecks; API and the
+optional Cloudflare Tunnel wait for healthy dependencies. The runner also uses
+`docker/seccomp/local-agents-runner.json` to deny high-risk syscalls such as `ptrace`,
+`mount`, `unshare`, `keyctl`, `bpf`, and `perf_event_open`.
+
+This seccomp profile is compatibility-first hardening, not the final isolation boundary.
+For production exposure, evaluate gVisor/AppArmor or a microVM runner, plus dependency
+lock/audit and optional Cloudflare Access in front of admin/public tunnel routes.
 
 ## Notifications
 

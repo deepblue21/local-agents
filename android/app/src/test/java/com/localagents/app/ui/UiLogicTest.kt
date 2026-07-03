@@ -2,6 +2,7 @@ package com.localagents.app.ui
 
 import com.localagents.app.formatPairingCode
 import com.localagents.app.normalizePairingCode
+import com.localagents.app.pairLinkRequiresConfirmation
 import com.localagents.app.data.SessionContext
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -61,6 +62,14 @@ class UiLogicTest {
     fun pairingCodeFormatsAndNormalizes() {
         assertEquals("ABCD · EFGH · 2345", formatPairingCode("abcd-efgh 2345"))
         assertEquals("ABCDEFGH2345", normalizePairingCode("abcd · efgh-2345"))
+    }
+
+    @Test
+    fun pairLinkRequiresConfirmationForNewOrChangedHost() {
+        assertEquals(true, pairLinkRequiresConfirmation("", "https://agents.example.test"))
+        assertEquals(true, pairLinkRequiresConfirmation("https://safe.example", "https://evil.example"))
+        assertEquals(false, pairLinkRequiresConfirmation("https://safe.example/", "https://safe.example"))
+        assertEquals(false, pairLinkRequiresConfirmation("https://safe.example", ""))
     }
 
     @Test

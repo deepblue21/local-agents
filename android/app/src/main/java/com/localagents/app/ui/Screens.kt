@@ -308,6 +308,14 @@ internal fun PairScreen(vm: LocalAgentsViewModel) {
             textStyle = androidx.compose.ui.text.TextStyle(fontFamily = AppMonoFamily, fontSize = 14.sp, letterSpacing = 2.sp),
         )
         PairHostPreview(vm.pairUrl, vm.hostStatus, vm.hostProbe)
+        vm.pendingPairConfirmation?.let { confirmation ->
+            PairLinkConfirmationPanel(
+                url = confirmation.url,
+                codePreview = confirmation.codePreview,
+                onConfirm = vm::confirmPairLink,
+                onReject = vm::rejectPairLink,
+            )
+        }
         vm.error?.let {
             Spacer(Modifier.height(12.dp))
             Text(it, color = Coral, fontSize = 13.sp)
@@ -316,7 +324,10 @@ internal fun PairScreen(vm: LocalAgentsViewModel) {
         Button(
             onClick = { vm.pair(deviceName) },
             modifier = Modifier.fillMaxWidth().height(50.dp),
-            enabled = !vm.pairing && vm.pairUrl.isNotBlank() && vm.pairCode.isNotBlank(),
+            enabled = !vm.pairing &&
+                vm.pendingPairConfirmation == null &&
+                vm.pairUrl.isNotBlank() &&
+                vm.pairCode.isNotBlank(),
             shape = RoundedCornerShape(11.dp),
         ) {
             if (vm.pairing) AgentActivityIndicator(color = MaterialTheme.colorScheme.onPrimary, diameter = 22.dp)
@@ -324,6 +335,68 @@ internal fun PairScreen(vm: LocalAgentsViewModel) {
         }
         TextButton(onClick = vm::openSetupGuide, modifier = Modifier.fillMaxWidth()) {
             Text(stringResource(R.string.action_open_setup), color = TextSecondary, fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+private fun PairLinkConfirmationPanel(
+    url: String,
+    codePreview: String,
+    onConfirm: () -> Unit,
+    onReject: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Amber.copy(alpha = 0.08f))
+            .border(1.dp, Amber.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+            .padding(12.dp),
+    ) {
+        Text(
+            stringResource(R.string.pair_link_confirm_title),
+            color = Amber,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = AppMonoFamily,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            stringResource(R.string.pair_link_confirm_body),
+            color = TextSecondary,
+            fontSize = 12.sp,
+            lineHeight = 17.sp,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            url.removePrefix("https://").removePrefix("http://"),
+            color = TextPrimary,
+            fontSize = 11.sp,
+            fontFamily = AppMonoFamily,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (codePreview.isNotBlank()) {
+            Spacer(Modifier.height(4.dp))
+            Text(codePreview, color = Muted, fontSize = 10.sp, fontFamily = AppMonoFamily)
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = onReject,
+                modifier = Modifier.weight(1f).height(38.dp),
+                shape = RoundedCornerShape(9.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+                contentPadding = PaddingValues(horizontal = 8.dp),
+            ) { Text(stringResource(R.string.action_reject_pair_link), fontSize = 12.sp) }
+            Button(
+                onClick = onConfirm,
+                modifier = Modifier.weight(1f).height(38.dp),
+                shape = RoundedCornerShape(9.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp),
+            ) { Text(stringResource(R.string.action_confirm_pair_link), fontSize = 12.sp) }
         }
     }
 }

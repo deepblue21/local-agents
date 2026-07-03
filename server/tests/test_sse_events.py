@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from local_agents.app import create_app
+from local_agents.app import EventStreamLimiter, create_app
 from local_agents.config import Settings
 from local_agents.models import RunStatus
 
@@ -29,6 +29,20 @@ def make_app_and_client(tmp_path):
     return app, TestClient(app)
 
 
+def make_app_and_client_with_stream_cap(tmp_path, stream_cap: int):
+    settings = Settings(
+        database=tmp_path / "local_agents.db",
+        admin_token=ADMIN,
+        public_url="https://agents.example.test",
+        ollama_url="http://127.0.0.1:9",
+        nova_url=None,
+        sse_streams_per_device=stream_cap,
+    )
+    app = create_app(settings)
+    app.state.db.initialize()
+    return app, TestClient(app)
+
+
 def auth_headers(client: TestClient) -> dict[str, str]:
     code = client.post("/api/v1/admin/pairing", headers={"X-Admin-Token": ADMIN}).json()["code"]
     tokens = client.post(
@@ -43,6 +57,14 @@ def make_finished_run(app):
     run = db.create_run(session["id"], "task", "qwen3", "ollama")  # emits run.queued
     db.add_event(run["id"], "assistant.delta", {"content": "Merhaba"})
     db.set_run_status(run["id"], RunStatus.COMPLETED)
+    return run["id"]
+
+
+def make_running_run(app):
+    db = app.state.db
+    session = db.create_session("S")
+    run = db.create_run(session["id"], "task", "qwen3", "ollama")
+    db.set_run_status(run["id"], RunStatus.RUNNING)
     return run["id"]
 
 
@@ -87,3 +109,15 @@ def test_last_event_id_skips_already_delivered_events(tmp_path):
     body = response.text
     assert "event: run.queued" not in body
     assert "event: assistant.delta" in body
+
+
+async def test_event_stream_limiter_caps_and_releases_per_device():
+    limiter = EventStreamLimiter(per_device=1)
+
+    assert await limiter.acquire("device-1") is True
+    assert await limiter.acquire("device-1") is False
+    assert await limiter.acquire("device-2") is True
+
+    await limiter.release("device-1")
+
+    assert await limiter.acquire("device-1") is True

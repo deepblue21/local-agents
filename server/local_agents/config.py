@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     access_token_minutes: int = 15
     refresh_token_days: int = 30
     pairing_code_minutes: int = 240
+    retention_revoked_token_grace_days: int = 7
+    retention_run_event_days: int = 30
+    sse_streams_per_device: int = 2
+    sse_reauth_seconds: float = 30.0
     web_search_provider: str = "duckduckgo"
     brave_search_api_key: str | None = None
     web_search_timeout_seconds: float = 10.0

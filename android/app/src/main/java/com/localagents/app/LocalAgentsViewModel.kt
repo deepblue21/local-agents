@@ -59,6 +59,7 @@ class LocalAgentsViewModel(app: Application) : AndroidViewModel(app) {
     var showSetupGuide by mutableStateOf(false); private set
     var sessionContext by mutableStateOf(SessionContext()); private set
     var compressingContext by mutableStateOf(false); private set
+    var pendingPairConfirmation by mutableStateOf<PairLinkConfirmation?>(null); private set
 
     val sessions = mutableStateListOf<AgentSession>()
     val messages = mutableStateListOf<ChatMessage>()
@@ -81,14 +82,11 @@ class LocalAgentsViewModel(app: Application) : AndroidViewModel(app) {
             settings = store.load()
             pairUrl = settings.baseUrl
             val pendingLink = pendingPairLink
-            if (pendingLink != null) {
-                pairUrl = pendingLink.url ?: pairUrl
-                pairCode = formatPairingCode(pendingLink.code ?: pairCode)
-            }
             val savedTheme = store.loadThemeId()
             applyTheme(savedTheme)
             themeId = savedTheme
             showSetupGuide = !store.loadSetupGuideSeen() && pendingLink == null
+            pendingLink?.let { applyPairLinkFields(it) }
             initialized = true
             if (settings.accessToken.isNotBlank()) refreshAll() else probeHost(pairUrl)
             handleWidgetTargetIfReady()
@@ -98,9 +96,15 @@ class LocalAgentsViewModel(app: Application) : AndroidViewModel(app) {
     fun changeTab(value: MainTab) { tab = value }
     fun updatePairUrl(value: String) {
         pairUrl = value
+        pendingPairLink = null
+        pendingPairConfirmation = null
         probeHost(value)
     }
-    fun updatePairCode(value: String) { pairCode = formatPairingCode(value) }
+    fun updatePairCode(value: String) {
+        pairCode = formatPairingCode(value)
+        pendingPairLink = null
+        pendingPairConfirmation = null
+    }
 
     /** Debounced unauthenticated /health probe so the pairing screen shows live host status. */
     fun probeHost(value: String) {
@@ -136,10 +140,21 @@ class LocalAgentsViewModel(app: Application) : AndroidViewModel(app) {
             code = uri.getQueryParameter("code")?.takeIf(String::isNotBlank),
         )
         pendingPairLink = link
-        link.url?.let { pairUrl = normalizedBaseUrl(it) ?: it.trim() }
-        link.code?.let { pairCode = formatPairingCode(it) }
+        applyPairLinkFields(link)
         showSetupGuide = false
         if (initialized) probeHost(pairUrl)
+    }
+
+    fun confirmPairLink() {
+        pendingPairConfirmation = null
+    }
+
+    fun rejectPairLink() {
+        pendingPairLink = null
+        pendingPairConfirmation = null
+        pairUrl = settings.baseUrl
+        pairCode = ""
+        probeHost(pairUrl)
     }
 
     fun applyWidgetIntent(intent: Intent?) {
@@ -162,6 +177,10 @@ class LocalAgentsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun pair(deviceName: String) {
         if (pairUrl.isBlank() || pairCode.isBlank() || pairing) return
+        if (pendingPairConfirmation != null) {
+            error = getApplication<Application>().getString(R.string.error_confirm_pair_link)
+            return
+        }
         val normalized = normalizedBaseUrl(pairUrl)
         if (normalized == null) {
             error = getApplication<Application>().getString(R.string.error_invalid_server_address)
@@ -183,6 +202,7 @@ class LocalAgentsViewModel(app: Application) : AndroidViewModel(app) {
                 store.save(settings)
                 store.saveSetupGuideSeen(true)
                 pendingPairLink = null
+                pendingPairConfirmation = null
                 pairCode = ""
                 refreshAll()
             } catch (exc: Exception) {
@@ -542,6 +562,20 @@ class LocalAgentsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun applyPairLinkFields(link: PairLink) {
+        val normalizedUrl = link.url?.let { normalizedBaseUrl(it) ?: it.trim() }
+        normalizedUrl?.let { pairUrl = it }
+        link.code?.let { pairCode = formatPairingCode(it) }
+        pendingPairConfirmation = if (pairLinkRequiresConfirmation(settings.baseUrl, normalizedUrl)) {
+            PairLinkConfirmation(
+                url = normalizedUrl.orEmpty(),
+                codePreview = link.code?.let(::formatPairingCode).orEmpty(),
+            )
+        } else {
+            null
+        }
+    }
+
     private fun beginAssistantActivity() {
         val sessionId = selectedSession?.id ?: return
         val hasStreamingAssistant = messages.any { it.role == "assistant" && it.streaming }
@@ -674,7 +708,16 @@ class LocalAgentsViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
+data class PairLinkConfirmation(val url: String, val codePreview: String)
+
 private data class PairLink(val url: String?, val code: String?)
+
+internal fun pairLinkRequiresConfirmation(currentBaseUrl: String, incomingUrl: String?): Boolean {
+    val incoming = incomingUrl?.let { normalizedBaseUrl(it) ?: it.trim().trimEnd('/') }.orEmpty()
+    if (incoming.isBlank()) return false
+    val current = (normalizedBaseUrl(currentBaseUrl) ?: currentBaseUrl.trim().trimEnd('/'))
+    return current.isBlank() || !current.equals(incoming, ignoreCase = true)
+}
 
 internal fun normalizePairingCode(value: String): String =
     value.uppercase().filter(Char::isLetterOrDigit)

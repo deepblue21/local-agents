@@ -5,7 +5,9 @@ import base64
 import io
 import json
 import secrets
+from dataclasses import dataclass
 from contextlib import asynccontextmanager
+from time import monotonic
 from typing import Annotated
 from urllib.parse import urlencode
 
@@ -41,6 +43,35 @@ from .security import issue_tokens
 from .web_tools import WebToolClient
 
 
+@dataclass(frozen=True)
+class AuthContext:
+    device_id: str
+    token: str
+
+
+class EventStreamLimiter:
+    def __init__(self, per_device: int):
+        self.per_device = max(1, per_device)
+        self._active: dict[str, int] = {}
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, device_id: str) -> bool:
+        async with self._lock:
+            active = self._active.get(device_id, 0)
+            if active >= self.per_device:
+                return False
+            self._active[device_id] = active + 1
+            return True
+
+    async def release(self, device_id: str) -> None:
+        async with self._lock:
+            active = self._active.get(device_id, 0)
+            if active <= 1:
+                self._active.pop(device_id, None)
+            else:
+                self._active[device_id] = active - 1
+
+
 def _qr_data_url(value: str) -> str:
     image = qrcode.make(value)
     output = io.BytesIO()
@@ -73,6 +104,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         db.initialize()
+        db.cleanup_retention(
+            revoked_token_grace_days=cfg.retention_revoked_token_grace_days,
+            run_event_retention_days=cfg.retention_run_event_days,
+        )
         await manager.start()
         yield
         await manager.stop()
@@ -89,6 +124,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.db = db
     app.state.manager = manager
     auth_rate_limiter = InMemoryRateLimiter(cfg.auth_rate_limit_per_minute)
+    event_stream_limiter = EventStreamLimiter(cfg.sse_streams_per_device)
+    app.state.event_stream_limiter = event_stream_limiter
 
     @app.middleware("http")
     async def add_security_headers(request: Request, call_next):
@@ -113,13 +150,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return response
 
-    def bearer_device(authorization: Annotated[str | None, Header()] = None) -> str:
+    def bearer_auth(authorization: Annotated[str | None, Header()] = None) -> AuthContext:
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "bearer token required")
-        device_id = db.authenticate(authorization[7:].strip())
+        token = authorization[7:].strip()
+        device_id = db.authenticate(token)
         if not device_id:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or expired token")
-        return device_id
+        return AuthContext(device_id=device_id, token=token)
+
+    def bearer_device(auth: AuthContext = Depends(bearer_auth)) -> str:
+        return auth.device_id
+
+    async def acquire_event_stream(device_id: str) -> None:
+        if await event_stream_limiter.acquire(device_id):
+            return
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "too many active event streams",
+        )
+
+    async def release_event_stream(device_id: str) -> None:
+        await event_stream_limiter.release(device_id)
 
     def require_admin(x_admin_token: Annotated[str | None, Header()] = None) -> None:
         if not x_admin_token or not secrets.compare_digest(x_admin_token, cfg.admin_token):
@@ -346,35 +398,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
 
-    @app.get("/api/v1/runs/{run_id}/events", dependencies=[Depends(bearer_device)])
-    async def events(run_id: str, request: Request, last_event_id: int | None = Header(default=None)):
+    @app.get("/api/v1/runs/{run_id}/events")
+    async def events(
+        run_id: str,
+        request: Request,
+        auth: AuthContext = Depends(bearer_auth),
+        last_event_id: int | None = Header(default=None),
+    ):
         if not db.get_run(run_id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+        await acquire_event_stream(auth.device_id)
 
         async def stream():
             cursor = max(0, last_event_id or 0)
             idle_ticks = 0
-            while True:
-                if await request.is_disconnected():
-                    return
-                rows = db.list_events(run_id, cursor)
-                for row in rows:
-                    cursor = row["seq"]
-                    payload = EventOut(**row).model_dump(mode="json")
-                    yield f"id: {cursor}\nevent: {row['type']}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                    idle_ticks = 0
-                run = db.get_run(run_id)
-                if run and RunStatus(run["status"]) in {
-                    RunStatus.COMPLETED,
-                    RunStatus.FAILED,
-                    RunStatus.CANCELLED,
-                } and not db.list_events(run_id, cursor):
-                    return
-                idle_ticks += 1
-                if idle_ticks >= 50:
-                    yield ": heartbeat\n\n"
-                    idle_ticks = 0
-                await asyncio.sleep(0.3)
+            last_reauth = 0.0
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    current_time = monotonic()
+                    if current_time - last_reauth >= max(1.0, cfg.sse_reauth_seconds):
+                        last_reauth = current_time
+                        if db.authenticate(auth.token) != auth.device_id:
+                            return
+                    rows = db.list_events(run_id, cursor)
+                    for row in rows:
+                        cursor = row["seq"]
+                        payload = EventOut(**row).model_dump(mode="json")
+                        yield f"id: {cursor}\nevent: {row['type']}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        idle_ticks = 0
+                    run = db.get_run(run_id)
+                    if run and RunStatus(run["status"]) in {
+                        RunStatus.COMPLETED,
+                        RunStatus.FAILED,
+                        RunStatus.CANCELLED,
+                    } and not db.list_events(run_id, cursor):
+                        return
+                    idle_ticks += 1
+                    if idle_ticks >= 50:
+                        yield ": heartbeat\n\n"
+                        idle_ticks = 0
+                    await asyncio.sleep(0.3)
+            finally:
+                await release_event_stream(auth.device_id)
 
         return StreamingResponse(
             stream(),

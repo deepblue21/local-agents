@@ -16,6 +16,14 @@ list and revoke paired devices through HTTP; revocation invalidates both access 
 refresh tokens. Runner file search delegates untrusted patterns to ripgrep's linear-time
 regex engine with a timeout, and missing executables now return a controlled `400`.
 
+**Progress note (2026-07-02, second pass):** Android deep links now require explicit
+host confirmation before pairing can proceed. The companion now performs startup
+retention cleanup for expired/used auth artifacts and old terminal run events, caps SSE
+streams per device, and revalidates access tokens during long-lived streams. CI, Compose
+healthchecks, and a runner seccomp deny profile were added. Verified App Links,
+stronger sandbox runtimes such as gVisor/AppArmor, dependency locks/audit, and
+fine-grained device authorization remain open follow-ups.
+
 This project's threat model is unusually sharp: a phone on the public internet drives an
 LLM agent that can **read, write, and execute commands** on the operator's PC. The design
 is sound — a hardened runner, hashed one-use pairing codes, rotating tokens — but several
@@ -27,26 +35,26 @@ gaps would matter the moment the service is exposed through the Cloudflare tunne
 
 | ID | Severity | Area | Finding |
 |----|----------|------|---------|
-| H1 | High | Server / config | Weak default admin token, no startup guard |
-| H2 | High | Server / API | No rate limiting or lockout on admin / pairing / auth endpoints |
-| H3 | High | Android | Deep link pre-fills attacker-controlled server URL + code without confirmation |
-| H4 | High | Runner | Arbitrary command execution — container hardening is the only boundary |
-| M1 | Medium | Server | OpenAPI docs (`/docs`, `/redoc`, `/openapi.json`) exposed without auth |
-| M2 | Medium | Server | No HTTP security headers; admin page is framable (clickjacking) |
+| H1 | High | Server / config | Resolved: insecure default admin token is refused without explicit dev override |
+| H2 | High | Server / API | Resolved: auth-adjacent endpoints are rate-limited by client/path |
+| H3 | High | Android | Partially resolved: deep-link host confirmation added; verified App Links still pending |
+| H4 | High | Runner | Partially hardened: runner seccomp profile added; gVisor/AppArmor still pending |
+| M1 | Medium | Server | Resolved: public OpenAPI docs are disabled |
+| M2 | Medium | Server | Resolved: browser/admin security headers are emitted |
 | M3 | Medium | Runner | Resolved: `search_files` uses ripgrep with timeout instead of Python `re` |
 | M4 | Medium | Server | Resolved: admin device listing and revocation API |
 | M5 | Medium | Server | Coarse authorization — every paired device sees all sessions and runs |
-| M6 | Medium | Server / DB | Unbounded growth: expired tokens, used codes, and events are never purged |
+| M6 | Medium | Server / DB | Resolved: startup retention cleanup purges expired/used auth artifacts and old terminal events |
 | M7 | Medium | Android | Resolved: cleartext scoped by `network_security_config`; pinning optional |
 | M8 | Medium | Runner | Resolved: missing executable returns controlled `400` |
-| M9 | Medium | Server | SSE stream has no per-device cap and polls the DB every 0.3 s |
+| M9 | Medium | Server | Partially resolved: per-device stream cap and token revalidation added; DB polling remains |
 | L1 | Low | Build | `langgraph` / `langgraph-checkpoint-sqlite` declared but never imported |
 | L2 | Low | Build | No dependency lockfile / `pip-audit` |
-| L3 | Low | CI | No CI runs `ruff` + `pytest` |
-| L4 | Low | Infra | `depends_on` uses `service_started`, not `service_healthy` |
+| L3 | Low | CI | Resolved: GitHub Actions runs Python lint/tests and Android unit tests |
+| L4 | Low | Infra | Resolved: Compose healthchecks and `service_healthy` dependencies added |
 | L5 | Low | Server | Raw exception text surfaced into events / responses |
-| L6 | Low | Server | Access-token TTL not re-checked mid-SSE-stream |
-| L7 | Low | Build | No `.dockerignore` |
+| L6 | Low | Server | Resolved: long-lived SSE streams periodically revalidate the access token |
+| L7 | Low | Build | Resolved: Docker build contexts are scoped and server/runner `.dockerignore` files exist |
 
 ---
 
@@ -106,6 +114,10 @@ verified **Android App Links** (`https` scheme + `assetlinks.json` on the tunnel
 `android:autoVerify="true"`), which eliminate scheme hijacking; (3) allowlist/validate the
 host against the operator's known tunnel domain. See `docs/RESEARCH.md` §Android.
 
+**Status:** the app now shows a host confirmation panel for QR/deep-link pairing and
+keeps the Pair action disabled until the operator confirms the companion URL. Remaining:
+verified Android App Links and an operator/domain allowlist for production tunnel domains.
+
 ### H4 — Arbitrary command execution; the container is the only boundary
 `runner/runner_app/main.py:112` (`run_command`), `docker-compose.yml` (`runner` service)
 
@@ -121,6 +133,11 @@ kernel-level escape.
 profile (block `ptrace`, `unshare`, `mount`, `keyctl`, `bpf`, `perf_event_open`) and/or an
 AppArmor profile; consider `gVisor` (runsc) or a microVM (Firecracker/Kata) for stronger
 isolation; optionally allowlist executables. See `docs/RESEARCH.md` §Sandboxing.
+
+**Status:** Compose now attaches `docker/seccomp/local-agents-runner.json`, which denies
+high-risk syscalls such as `ptrace`, `mount`, `unshare`, `keyctl`, `bpf`, and
+`perf_event_open`. This is a compatibility-first hardening layer; gVisor/AppArmor or a
+microVM remain the stronger production boundary.
 
 ---
 
@@ -187,6 +204,10 @@ Expired `auth_tokens`, used/expired `pairing_codes`, and all `run_events` accumu
 **Fix:** periodic cleanup (delete expired tokens and used/expired pairing codes; optionally
 cap or age out `run_events`). A lightweight `asyncio` housekeeping task or a startup sweep.
 
+**Status:** resolved with a startup sweep in the companion. It deletes expired auth tokens,
+old revoked tokens, used/expired pairing codes, and run events older than the retention
+window for terminal runs while preserving active-run replay.
+
 ### M7 — Android cleartext traffic globally enabled — resolved
 `android/app/src/main/AndroidManifest.xml` no longer sets global
 `android:usesCleartextTraffic="true"`.
@@ -215,6 +236,10 @@ open connections and DB reads.
 **Fix:** cap concurrent streams per device; longer term, replace polling with an in-process
 notify/condition so events push instead of being polled.
 
+**Status:** per-device stream caps and periodic token revalidation are implemented. The
+remaining improvement is replacing the 300 ms DB polling loop with an in-process
+notify/condition.
+
 ---
 
 ## Low severity / hardening
@@ -224,16 +249,17 @@ notify/condition so events push instead of being polled.
   them; today they only enlarge the install and attack surface.
 - **L2** — Dependencies are range-pinned with no lockfile and no `pip-audit`. Add a lock
   (uv / pip-tools) and a vulnerability scan.
-- **L3** — No CI. `ruff` and `pytest` exist but nothing runs them on push. Add a GitHub
-  Actions workflow across Python 3.11–3.13.
-- **L4** — `docker-compose.yml` `depends_on` uses `condition: service_started`; the `/health`
-  endpoints aren't wired as container healthchecks. Add `healthcheck` blocks + `service_healthy`.
+- **L3** — Resolved: `.github/workflows/ci.yml` runs server/runner `ruff`, Python tests, and
+  Android `testDebugUnitTest`.
+- **L4** — Resolved: API and runner healthchecks are wired, and API/cloudflared wait for
+  `service_healthy`.
 - **L5** — Raw `str(exc)` is surfaced into `run.failed` events and the `run_command` error
   response (`agent.py:133`, `app.py:195`), a minor internal-detail leak to the phone. Log
   detail server-side; return a generic message.
-- **L6** — A long-lived SSE stream is not re-validated after the 15-minute access token
-  expires. Optionally re-check the token periodically inside the stream.
-- **L7** — No `.dockerignore`; the build context may pull in `.git` / `.venv`.
+- **L6** — Resolved: SSE streams revalidate the access token periodically and end if the
+  token expires or the device is revoked.
+- **L7** — Resolved for the active Docker contexts: Compose builds `./server` and `./runner`,
+  and both contexts include `.dockerignore`.
 
 ---
 
@@ -267,6 +293,7 @@ so regressions surface immediately:
 1. **H1 + H2** — gate the default admin token and add rate limiting (smallest change, biggest
    exposure reduction before any tunnel goes live).
 2. **M1 + M2** — disable public docs, add security headers.
-3. **H3 + M7** — Android pairing confirmation + App Links + cleartext policy.
-4. **H4 hardening** — seccomp/AppArmor profile and documented runner threat model.
-5. **M5, M6, M9, L1–L7** — authorization scoping, retention, and build/CI hygiene.
+3. **H3 remaining** — verified Android App Links + production tunnel domain allowlist.
+4. **H4 remaining** — evaluate gVisor/AppArmor or a microVM for the runner trust boundary.
+5. **M5, L1, L2, L5** — device/session authorization scoping, dependency cleanup/lock/audit,
+   and generic error surfaces.

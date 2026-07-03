@@ -17,7 +17,13 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       runner:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -52,11 +58,18 @@ services:
     depends_on:
       socket-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; import sys; sys.exit(0 if Path('/run/local-agents/runner.sock').exists() else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     read_only: true
     tmpfs:
       - /tmp:size=256m,mode=1777
     security_opt:
       - no-new-privileges:true
+      - seccomp:./docker/seccomp/local-agents-runner.json
     cap_drop:
       - ALL
     pids_limit: 256
@@ -69,7 +82,8 @@ services:
     restart: unless-stopped
     command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     security_opt:
       - no-new-privileges:true
     cap_drop:
