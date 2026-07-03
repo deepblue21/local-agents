@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 
 from .adapters.base import ModelAdapter
 from .context import build_model_messages, context_stats, estimate_message_tokens
@@ -13,6 +14,13 @@ from .web_tools import WebToolClient
 
 
 TERMINAL = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
+GENERIC_AGENT_ERROR = "agent execution failed"
+GENERIC_TOOL_ERROR = "tool execution failed"
+logger = logging.getLogger(__name__)
+
+
+class AgentPublicError(RuntimeError):
+    """Run failure message that is safe to persist and show to the controller."""
 
 
 class AgentManager:
@@ -179,10 +187,18 @@ class AgentManager:
             self.db.add_event(run_id, "run.completed", {})
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            message = str(exc)[:1000]
+        except AgentPublicError as exc:
+            message = str(exc)
             self.db.set_run_status(run_id, RunStatus.FAILED, message)
             self.db.add_event(run_id, "run.failed", {"error": message})
+        except Exception as exc:
+            logger.exception("Agent run %s failed", run_id)
+            self.db.set_run_status(run_id, RunStatus.FAILED, GENERIC_AGENT_ERROR)
+            self.db.add_event(
+                run_id,
+                "run.failed",
+                {"error": GENERIC_AGENT_ERROR, "error_type": exc.__class__.__name__},
+            )
 
     async def _agent_loop(
         self,
@@ -241,12 +257,21 @@ class AgentManager:
                     self.db.add_event(run_id, "tool.finished", {"name": name, "result": result})
                     self._add_source_events(run_id, name, result)
                 except Exception as exc:
-                    result = {"ok": False, "error": str(exc)}
-                    self.db.add_event(run_id, "tool.failed", {"name": name, "error": str(exc)})
+                    logger.exception("Tool %s failed for run %s", name, run_id)
+                    result = {"ok": False, "error": GENERIC_TOOL_ERROR}
+                    self.db.add_event(
+                        run_id,
+                        "tool.failed",
+                        {
+                            "name": name,
+                            "error": GENERIC_TOOL_ERROR,
+                            "error_type": exc.__class__.__name__,
+                        },
+                    )
                 messages.append(
                     {"role": "tool", "tool_name": name, "content": json.dumps(result, ensure_ascii=False)}
                 )
-        raise RuntimeError("agent stopped after reaching the 8-round tool limit")
+        raise AgentPublicError("agent stopped after reaching the 8-round tool limit")
 
     def _model_messages(self, session_id: str) -> list[dict]:
         messages = self.db.list_messages(session_id)

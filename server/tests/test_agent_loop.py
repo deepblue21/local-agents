@@ -42,6 +42,12 @@ class AlwaysToolAdapter:
         )
 
 
+class FailingAdapter:
+    async def stream_chat(self, *, model, messages, tools=None):
+        raise RuntimeError("internal adapter secret C:/Users/salih/model.log")
+        yield  # pragma: no cover
+
+
 class FakeRunner:
     def __init__(self, result=None):
         self.calls: list[tuple[str, dict]] = []
@@ -50,6 +56,11 @@ class FakeRunner:
     async def call(self, tool: str, arguments: dict) -> dict:
         self.calls.append((tool, arguments))
         return self._result
+
+
+class FailingRunner:
+    async def call(self, tool: str, arguments: dict) -> dict:
+        raise RuntimeError("internal runner secret /workspace/private.txt")
 
 
 class FakeWebTools:
@@ -216,6 +227,39 @@ async def test_unconfigured_provider_marks_failed(tmp_path):
     row = db.get_run(run["id"])
     assert row["status"] == RunStatus.FAILED
     assert row["error"] == "provider unavailable"
+
+
+async def test_unexpected_agent_failure_uses_generic_error_surface(tmp_path):
+    db = make_db(tmp_path)
+    run = seed_run(db)
+    manager = AgentManager(db, FakeRunner(), {"ollama": FailingAdapter()}, "qwen3")
+
+    await manager._execute(db.get_run(run["id"]))
+
+    row = db.get_run(run["id"])
+    assert row["status"] == RunStatus.FAILED
+    assert row["error"] == "agent execution failed"
+    failed = next(event for event in db.list_events(run["id"]) if event["type"] == "run.failed")
+    assert failed["payload"]["error"] == "agent execution failed"
+    assert "C:/Users" not in str(failed["payload"])
+
+
+async def test_tool_failure_uses_generic_error_surface(tmp_path):
+    db = make_db(tmp_path)
+    run = seed_run(db)
+    adapter = ScriptedAdapter(
+        [
+            [AdapterChunk(tool_calls=[{"function": {"name": "list_files", "arguments": {"path": "."}}}])],
+            [AdapterChunk(content="handled")],
+        ]
+    )
+    manager = AgentManager(db, FailingRunner(), {"ollama": adapter}, "qwen3")
+
+    await manager._execute(db.get_run(run["id"]))
+
+    failed = next(event for event in db.list_events(run["id"]) if event["type"] == "tool.failed")
+    assert failed["payload"]["error"] == "tool execution failed"
+    assert "/workspace/private" not in str(failed["payload"])
 
 
 async def test_steer_command_is_stored_and_consumed_once(tmp_path):

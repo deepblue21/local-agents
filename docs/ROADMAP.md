@@ -216,6 +216,10 @@ Tamamlananlar:
   cihaz başına limitlenir ve uzun bağlantılarda token yeniden doğrulanır. GitHub Actions
   CI, Compose healthcheck/`service_healthy`, server/runner `.dockerignore` durumu ve
   runner seccomp deny profili eklendi.
+- **Güvenlik sertleştirme — L1/L5** — kullanılmayan `langgraph` /
+  `langgraph-checkpoint-sqlite` bağımlılıkları kaldırıldı. Beklenmeyen agent/tool
+  exception detayları artık Android'e ve persisted event payload'larına raw metin olarak
+  dönmez; server log'da kalır, kullanıcı yüzeyinde generic hata + exception sınıfı görünür.
 
 Kalan büyük dış-servis parçası: app tamamen kapalıyken server-initiated push için
 Firebase/FCM project credentials ve companion-side push token akışı.
@@ -241,7 +245,7 @@ Firebase/FCM project credentials ve companion-side push token akışı.
   onayı. Kalan: verified Android App Links (`https` + `assetlinks.json` +
   `android:autoVerify`), üretim tunnel/domain allowlist, gVisor/AppArmor veya microVM
   değerlendirmesi, dependency lock + `pip-audit`, Cloudflare Access opsiyonel admin/API
-  perimetresi, cihaz/oturum sahipliği scoping'i ve kullanıcıya dönen generic hata yüzeyi.
+  perimetresi ve cihaz/oturum sahipliği scoping'i.
 - **Faz 7 — Reliability & observability.** Kalan büyük dış servis işi FCM'dir: Firebase
   project credentials, Android push token kaydı, companion-side push credential flow ve
   app process'i kapalıyken run tamamlandı/başarısız push'u. Repo içi sonraki işler:

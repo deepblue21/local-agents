@@ -24,6 +24,11 @@ healthchecks, and a runner seccomp deny profile were added. Verified App Links,
 stronger sandbox runtimes such as gVisor/AppArmor, dependency locks/audit, and
 fine-grained device authorization remain open follow-ups.
 
+**Progress note (2026-07-03):** L1 and L5 are now addressed. The unused LangGraph
+packages were removed from the server dependency lists. Unexpected agent and tool
+exceptions are logged server-side but return generic run/tool failure messages to Android
+so local paths and internal exception text do not leak into persisted events.
+
 This project's threat model is unusually sharp: a phone on the public internet drives an
 LLM agent that can **read, write, and execute commands** on the operator's PC. The design
 is sound — a hardened runner, hashed one-use pairing codes, rotating tokens — but several
@@ -48,11 +53,11 @@ gaps would matter the moment the service is exposed through the Cloudflare tunne
 | M7 | Medium | Android | Resolved: cleartext scoped by `network_security_config`; pinning optional |
 | M8 | Medium | Runner | Resolved: missing executable returns controlled `400` |
 | M9 | Medium | Server | Partially resolved: per-device stream cap and token revalidation added; DB polling remains |
-| L1 | Low | Build | `langgraph` / `langgraph-checkpoint-sqlite` declared but never imported |
+| L1 | Low | Build | Resolved: unused LangGraph dependencies removed |
 | L2 | Low | Build | No dependency lockfile / `pip-audit` |
 | L3 | Low | CI | Resolved: GitHub Actions runs Python lint/tests and Android unit tests |
 | L4 | Low | Infra | Resolved: Compose healthchecks and `service_healthy` dependencies added |
-| L5 | Low | Server | Raw exception text surfaced into events / responses |
+| L5 | Low | Server | Resolved: unexpected agent/tool exceptions use generic user-facing errors |
 | L6 | Low | Server | Resolved: long-lived SSE streams periodically revalidate the access token |
 | L7 | Low | Build | Resolved: Docker build contexts are scoped and server/runner `.dockerignore` files exist |
 
@@ -244,18 +249,18 @@ notify/condition.
 
 ## Low severity / hardening
 
-- **L1** — `langgraph` and `langgraph-checkpoint-sqlite` are declared in `pyproject.toml` /
-  `requirements.txt` but never imported (the agent loop is hand-rolled). Remove them or adopt
-  them; today they only enlarge the install and attack surface.
+- **L1** — Resolved: `langgraph` and `langgraph-checkpoint-sqlite` were removed from
+  `pyproject.toml` and `requirements.txt`; the agent loop remains hand-rolled.
 - **L2** — Dependencies are range-pinned with no lockfile and no `pip-audit`. Add a lock
   (uv / pip-tools) and a vulnerability scan.
 - **L3** — Resolved: `.github/workflows/ci.yml` runs server/runner `ruff`, Python tests, and
   Android `testDebugUnitTest`.
 - **L4** — Resolved: API and runner healthchecks are wired, and API/cloudflared wait for
   `service_healthy`.
-- **L5** — Raw `str(exc)` is surfaced into `run.failed` events and the `run_command` error
-  response (`agent.py:133`, `app.py:195`), a minor internal-detail leak to the phone. Log
-  detail server-side; return a generic message.
+- **L5** — Resolved for unexpected agent/tool failures: raw exception text is logged
+  server-side, while persisted `run.failed` / `tool.failed` payloads expose generic
+  messages and an exception class only. Intentional validation errors still return
+  specific messages.
 - **L6** — Resolved: SSE streams revalidate the access token periodically and end if the
   token expires or the device is revoked.
 - **L7** — Resolved for the active Docker contexts: Compose builds `./server` and `./runner`,
@@ -295,5 +300,4 @@ so regressions surface immediately:
 2. **M1 + M2** — disable public docs, add security headers.
 3. **H3 remaining** — verified Android App Links + production tunnel domain allowlist.
 4. **H4 remaining** — evaluate gVisor/AppArmor or a microVM for the runner trust boundary.
-5. **M5, L1, L2, L5** — device/session authorization scoping, dependency cleanup/lock/audit,
-   and generic error surfaces.
+5. **M5, L2** — device/session authorization scoping plus dependency lock/audit.

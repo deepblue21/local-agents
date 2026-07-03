@@ -49,6 +49,12 @@ Common run events:
 - `tool.started|tool.finished|tool.failed`
 - `source.found|source.fetched` for web research results shown as citations/sources.
 
+Unexpected agent and tool exceptions are logged by the companion, but persisted
+`run.failed` and `tool.failed` payloads expose generic user-facing messages rather than
+raw exception text. This avoids leaking local paths, command internals, provider details,
+or other host-side implementation data to Android while preserving enough status for the
+operator to understand that the run/tool failed.
+
 ## Run lifecycle
 
 `queued -> running -> paused -> running -> completed|failed|cancelled`

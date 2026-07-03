@@ -12,8 +12,6 @@ dependencies = [
   "httpx>=0.28,<1",
   "pydantic-settings>=2.7,<3",
   "qrcode[pil]>=8,<9",
-  "langgraph>=0.3,<2",
-  "langgraph-checkpoint-sqlite>=2,<4",
 ]
 
 [tool.setuptools.packages.find]
