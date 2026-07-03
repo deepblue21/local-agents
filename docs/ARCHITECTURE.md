@@ -125,10 +125,12 @@ optional Cloudflare Tunnel wait for healthy dependencies. The runner also uses
 `docker/seccomp/local-agents-runner.json` to deny high-risk syscalls such as `ptrace`,
 `mount`, `unshare`, `keyctl`, `bpf`, and `perf_event_open`.
 
-This seccomp profile is compatibility-first hardening, not the final isolation boundary.
-For production exposure, evaluate gVisor/AppArmor or a microVM runner, add a deterministic
-dependency lockfile, and consider optional Cloudflare Access in front of admin/public tunnel
-routes. CI already runs `pip-audit` for the Python server/runner dependency sets.
+This seccomp profile is compatibility-first hardening, not the final isolation boundary. A
+separate `docker-compose.gvisor.yml` override can run the runner with Docker runtime `runsc`
+when gVisor is installed on the host. For production exposure, evaluate that gVisor path,
+AppArmor, or a microVM runner, and consider optional Cloudflare Access in front of
+admin/public tunnel routes. Python dependencies are installed from deterministic lockfiles
+in CI and Docker, and CI runs `pip-audit` for the locked server/runner dependency sets.
 
 ## Notifications
 

@@ -60,6 +60,20 @@ docker compose up -d api runner
 Open `http://127.0.0.1:8787/admin`, enter the admin token, and create a pairing QR.
 The phone camera opens the `localagents://pair` deep link in the Android application.
 
+### Optional gVisor runner
+
+If the host has gVisor installed as Docker runtime `runsc`, start the runner with the
+override file:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d api runner
+```
+
+This keeps the existing no-network, read-only, seccomp, capability, pid, memory, and CPU
+limits, then runs the workspace tool container behind gVisor's user-space syscall layer.
+If Docker reports that runtime `runsc` is unknown, install/configure gVisor first or use the
+default compose file.
+
 ## 4. Cloudflare Tunnel
 
 Create a remotely managed tunnel and route the chosen public hostname to

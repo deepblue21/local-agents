@@ -1,6 +1,7 @@
 .env
 .venv/
 .runtime/
+.uv-cache/
 .pytest_cache/
 .pytest-tmp-codex/
 .ruff_cache/

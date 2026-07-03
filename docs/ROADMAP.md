@@ -224,9 +224,10 @@ Tamamlananlar:
   Session/run listeleme, mesaj/context okuma, run oluşturma, run kontrol komutları ve SSE
   event stream erişimi `owner_device_id` ile filtrelenir. İkinci cihaz başka cihazın
   session/run ID'lerine `404` alır.
-- **Güvenlik sertleştirme — L2 ilk geçiş** — GitHub Actions Python job'ı artık
-  `pip-audit` kurar ve server/runner dependency setinde bilinen güvenlik açığı bulursa
-  CI'ı düşürür. Kalan parça deterministik lockfile üretimi.
+- **Güvenlik sertleştirme — L2** — Python dependency setleri artık deterministik:
+  `server/requirements.lock`, `server/requirements-dev.lock` ve `runner/requirements.lock`
+  `uv pip compile` ile üretildi. CI ve Docker lockfile'lardan kurar; CI aynı locked setleri
+  `pip-audit` ile tarar.
 - **Reliability — M9 final** — SSE live tail artık 300 ms DB polling yerine in-process
   run-event notifier ile uyanır; replay garantisi DB'den korunur, canlı eventler push
   benzeri şekilde stream'e düşer.
@@ -234,6 +235,9 @@ Tamamlananlar:
   `e2e/android-smoke` hattı eklendi: APK kurar, `localagents://pair` deep link'ini açar,
   host onay panelini doğrular ve screenshot artifact üretir. ADB/emülatör bağımlılığı
   nedeniyle default CI'a bağlanmadı.
+- **Runner izolasyonu — gVisor opsiyonel yol** — `docker-compose.gvisor.yml` override'ı
+  eklendi. Hostta Docker runtime `runsc` kuruluysa runner gVisor altında başlatılabilir;
+  kurulu değilse default hardened container yolu aynı kalır.
 
 Kalan büyük dış-servis parçası: app tamamen kapalıyken server-initiated push için
 Firebase/FCM project credentials ve companion-side push token akışı.
@@ -258,9 +262,10 @@ Firebase/FCM project credentials ve companion-side push token akışı.
 - **Faz 6 — Production hardening.** Kapanan ilk parça: CI, compose healthcheck,
   seccomp deny profili, retention cleanup, SSE stream cap/revalidation ve deep-link host
   onayı. Kalan: verified Android App Links (`https` + `assetlinks.json` +
-  `android:autoVerify`), üretim tunnel/domain allowlist, gVisor/AppArmor veya microVM
-  değerlendirmesi, deterministik dependency lockfile, Cloudflare Access opsiyonel admin/API
-  perimetresi. Cihaz/oturum sahipliği scoping'i ve `pip-audit` CI taraması tamamlandı.
+  `android:autoVerify`), üretim tunnel/domain allowlist, AppArmor veya microVM
+  değerlendirmesi, Cloudflare Access opsiyonel admin/API perimetresi. Cihaz/oturum sahipliği
+  scoping'i, deterministik Python lockfile'lar, gVisor override ve `pip-audit` CI taraması
+  tamamlandı.
 - **Faz 7 — Reliability & observability.** Kalan büyük dış servis işi FCM'dir: Firebase
   project credentials, Android push token kaydı, companion-side push credential flow ve
   app process'i kapalıyken run tamamlandı/başarısız push'u. Repo içi sonraki işler:

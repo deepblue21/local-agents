@@ -9,17 +9,25 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_android_playwright_smoke_harness_is_documented_and_opt_in():
     package_json = ROOT / "e2e/android-smoke/package.json"
+    package_lock = ROOT / "e2e/android-smoke/package-lock.json"
     spec = ROOT / "e2e/android-smoke/tests/android-smoke.spec.ts"
     docs = ROOT / "docs/ANDROID_PLAYWRIGHT_SMOKE.md"
 
     assert package_json.exists()
+    assert package_lock.exists()
     assert spec.exists()
     assert docs.exists()
 
     package = json.loads(package_json.read_text(encoding="utf-8"))
-    assert package["scripts"]["android:smoke"] == "playwright test --config=playwright.config.ts"
+    assert package["scripts"]["android:smoke"] == (
+        "node ./node_modules/playwright/cli.js test --config=playwright.config.ts"
+    )
     assert "@playwright/test" in package["devDependencies"]
     assert "playwright" in package["devDependencies"]
+
+    lock = json.loads(package_lock.read_text(encoding="utf-8"))
+    assert lock["lockfileVersion"] == 3
+    assert lock["packages"][""]["devDependencies"] == package["devDependencies"]
 
     spec_text = spec.read_text(encoding="utf-8")
     assert "_android" in spec_text

@@ -1,0 +1,7 @@
+name: local-agents
+
+services:
+  runner:
+    # Optional stronger isolation path. Requires gVisor/runsc installed as a Docker runtime.
+    runtime: runsc
+
