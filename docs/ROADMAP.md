@@ -220,6 +220,10 @@ Tamamlananlar:
   `langgraph-checkpoint-sqlite` bağımlılıkları kaldırıldı. Beklenmeyen agent/tool
   exception detayları artık Android'e ve persisted event payload'larına raw metin olarak
   dönmez; server log'da kalır, kullanıcı yüzeyinde generic hata + exception sınıfı görünür.
+- **Güvenlik sertleştirme — M5** — oturumlar artık oluşturan paired device'a aittir.
+  Session/run listeleme, mesaj/context okuma, run oluşturma, run kontrol komutları ve SSE
+  event stream erişimi `owner_device_id` ile filtrelenir. İkinci cihaz başka cihazın
+  session/run ID'lerine `404` alır.
 
 Kalan büyük dış-servis parçası: app tamamen kapalıyken server-initiated push için
 Firebase/FCM project credentials ve companion-side push token akışı.
@@ -245,7 +249,7 @@ Firebase/FCM project credentials ve companion-side push token akışı.
   onayı. Kalan: verified Android App Links (`https` + `assetlinks.json` +
   `android:autoVerify`), üretim tunnel/domain allowlist, gVisor/AppArmor veya microVM
   değerlendirmesi, dependency lock + `pip-audit`, Cloudflare Access opsiyonel admin/API
-  perimetresi ve cihaz/oturum sahipliği scoping'i.
+  perimetresi. Cihaz/oturum sahipliği scoping'i tamamlandı.
 - **Faz 7 — Reliability & observability.** Kalan büyük dış servis işi FCM'dir: Firebase
   project credentials, Android push token kaydı, companion-side push credential flow ve
   app process'i kapalıyken run tamamlandı/başarısız push'u. Repo içi sonraki işler:

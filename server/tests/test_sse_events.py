@@ -51,9 +51,16 @@ def auth_headers(client: TestClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {tokens['access_token']}"}
 
 
-def make_finished_run(app):
+def device_id_for_headers(app, headers: dict[str, str]) -> str:
+    token = headers["Authorization"].removeprefix("Bearer ")
+    device_id = app.state.db.authenticate(token)
+    assert device_id
+    return device_id
+
+
+def make_finished_run(app, owner_device_id: str | None = None):
     db = app.state.db
-    session = db.create_session("S")
+    session = db.create_session("S", owner_device_id=owner_device_id)
     run = db.create_run(session["id"], "task", "qwen3", "ollama")  # emits run.queued
     db.add_event(run["id"], "assistant.delta", {"content": "Merhaba"})
     db.set_run_status(run["id"], RunStatus.COMPLETED)
@@ -82,8 +89,8 @@ def test_events_unknown_run_is_404(tmp_path):
 
 def test_finished_run_replays_all_events_then_closes(tmp_path):
     app, client = make_app_and_client(tmp_path)
-    run_id = make_finished_run(app)
     headers = auth_headers(client)
+    run_id = make_finished_run(app, owner_device_id=device_id_for_headers(app, headers))
 
     response = client.get(f"/api/v1/runs/{run_id}/events", headers=headers)
     assert response.status_code == 200
@@ -95,8 +102,8 @@ def test_finished_run_replays_all_events_then_closes(tmp_path):
 
 def test_last_event_id_skips_already_delivered_events(tmp_path):
     app, client = make_app_and_client(tmp_path)
-    run_id = make_finished_run(app)
     headers = auth_headers(client)
+    run_id = make_finished_run(app, owner_device_id=device_id_for_headers(app, headers))
 
     queued_seq = next(
         e["seq"] for e in app.state.db.list_events(run_id) if e["type"] == "run.queued"

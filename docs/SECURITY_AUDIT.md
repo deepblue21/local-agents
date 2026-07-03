@@ -29,6 +29,11 @@ packages were removed from the server dependency lists. Unexpected agent and too
 exceptions are logged server-side but return generic run/tool failure messages to Android
 so local paths and internal exception text do not leak into persisted events.
 
+**Progress note (2026-07-03, second pass):** M5 is now addressed for sessions, runs,
+messages, context, commands, and event streams. New sessions are owned by the paired
+device that creates them, and all controller routes filter by that owner. Existing legacy
+sessions are assigned to the sole active device during migration when that is unambiguous.
+
 This project's threat model is unusually sharp: a phone on the public internet drives an
 LLM agent that can **read, write, and execute commands** on the operator's PC. The design
 is sound — a hardened runner, hashed one-use pairing codes, rotating tokens — but several
@@ -48,7 +53,7 @@ gaps would matter the moment the service is exposed through the Cloudflare tunne
 | M2 | Medium | Server | Resolved: browser/admin security headers are emitted |
 | M3 | Medium | Runner | Resolved: `search_files` uses ripgrep with timeout instead of Python `re` |
 | M4 | Medium | Server | Resolved: admin device listing and revocation API |
-| M5 | Medium | Server | Coarse authorization — every paired device sees all sessions and runs |
+| M5 | Medium | Server | Resolved: sessions/runs are scoped to the owning paired device |
 | M6 | Medium | Server / DB | Resolved: startup retention cleanup purges expired/used auth artifacts and old terminal events |
 | M7 | Medium | Android | Resolved: cleartext scoped by `network_security_config`; pinning optional |
 | M8 | Medium | Runner | Resolved: missing executable returns controlled `400` |
@@ -193,14 +198,16 @@ only be deauthorized by hand-editing SQLite.
 `POST /api/v1/admin/devices/{id}/revoke`. Revocation sets `devices.revoked_at` and marks
 that device's existing auth tokens revoked.
 
-### M5 — Coarse authorization: every device sees everything
-`server/local_agents/app.py` — routes depend on `bearer_device` purely as a gate and discard
-the returned `device_id`. Any paired device can read all sessions/messages/runs and can
-pause/cancel/steer any run.
+### M5 — Coarse authorization: every device sees everything — resolved
+`server/local_agents/app.py` now uses the authenticated `device_id` for session/run
+listing, message reads, context reads/compression, run creation, run reads, commands, and
+event streams. `sessions.owner_device_id` records the paired device that created the
+conversation; `runs` inherit ownership through their session. A second paired device gets
+empty list responses and `404` for another device's session/run IDs.
 
-**Fix:** if multi-device is intended, scope sessions/runs by owning `device_id`. If this is a
-strictly single-user tool, state that assumption explicitly and keep device count to one
-(reinforced by M4 revocation).
+Migration note: existing unowned sessions are assigned to the sole active device during
+startup if there is exactly one active device. If multiple devices already exist, legacy
+unowned sessions stay unowned rather than being exposed to every device.
 
 ### M6 — Unbounded data growth / no retention
 Expired `auth_tokens`, used/expired `pairing_codes`, and all `run_events` accumulate forever
@@ -300,4 +307,4 @@ so regressions surface immediately:
 2. **M1 + M2** — disable public docs, add security headers.
 3. **H3 remaining** — verified Android App Links + production tunnel domain allowlist.
 4. **H4 remaining** — evaluate gVisor/AppArmor or a microVM for the runner trust boundary.
-5. **M5, L2** — device/session authorization scoping plus dependency lock/audit.
+5. **L2** — dependency lock/audit.

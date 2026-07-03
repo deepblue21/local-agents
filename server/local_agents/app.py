@@ -312,36 +312,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         capabilities.append("web")
         return result
 
-    @app.get("/api/v1/sessions", response_model=list[SessionOut], dependencies=[Depends(bearer_device)])
-    async def sessions() -> list[dict]:
-        return db.list_sessions()
+    @app.get("/api/v1/sessions", response_model=list[SessionOut])
+    async def sessions(device_id: str = Depends(bearer_device)) -> list[dict]:
+        return db.list_sessions(device_id)
 
-    @app.post("/api/v1/sessions", response_model=SessionOut, dependencies=[Depends(bearer_device)])
-    async def create_session(body: SessionCreate) -> dict:
-        return db.create_session(body.title.strip())
+    @app.post("/api/v1/sessions", response_model=SessionOut)
+    async def create_session(
+        body: SessionCreate,
+        device_id: str = Depends(bearer_device),
+    ) -> dict:
+        return db.create_session(body.title.strip(), owner_device_id=device_id)
 
-    @app.get("/api/v1/sessions/{session_id}/messages", dependencies=[Depends(bearer_device)])
-    async def messages(session_id: str) -> list[dict]:
-        if not db.get_session(session_id):
+    @app.get("/api/v1/sessions/{session_id}/messages")
+    async def messages(session_id: str, device_id: str = Depends(bearer_device)) -> list[dict]:
+        if not db.get_session(session_id, device_id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
         return db.list_messages(session_id)
 
     @app.get(
         "/api/v1/sessions/{session_id}/context",
         response_model=SessionContextOut,
-        dependencies=[Depends(bearer_device)],
     )
-    async def session_context(session_id: str) -> dict:
-        if not db.get_session(session_id):
+    async def session_context(
+        session_id: str,
+        device_id: str = Depends(bearer_device),
+    ) -> dict:
+        if not db.get_session(session_id, device_id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
         return manager.context_status(session_id)
 
     @app.post(
         "/api/v1/sessions/{session_id}/context/compress",
         response_model=SessionContextOut,
-        dependencies=[Depends(bearer_device)],
     )
-    async def compress_context(session_id: str, body: ContextCompress) -> dict:
+    async def compress_context(
+        session_id: str,
+        body: ContextCompress,
+        device_id: str = Depends(bearer_device),
+    ) -> dict:
+        if not db.get_session(session_id, device_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
         try:
             return await manager.compress_session(
                 session_id,
@@ -353,17 +363,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
 
-    @app.get("/api/v1/runs", response_model=list[RunOut], dependencies=[Depends(bearer_device)])
-    async def runs(limit: int = 100) -> list[dict]:
-        return db.list_runs(limit)
+    @app.get("/api/v1/runs", response_model=list[RunOut])
+    async def runs(limit: int = 100, device_id: str = Depends(bearer_device)) -> list[dict]:
+        return db.list_runs(limit, device_id)
 
     @app.post(
         "/api/v1/sessions/{session_id}/runs",
         response_model=RunOut,
-        dependencies=[Depends(bearer_device)],
     )
-    async def create_run(session_id: str, body: RunCreate) -> dict:
-        if not db.get_session(session_id):
+    async def create_run(
+        session_id: str,
+        body: RunCreate,
+        device_id: str = Depends(bearer_device),
+    ) -> dict:
+        if not db.get_session(session_id, device_id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
         if body.provider not in adapters:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "provider is not configured")
@@ -378,9 +391,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         manager.notify()
         return run
 
-    @app.get("/api/v1/runs/{run_id}", response_model=RunOut, dependencies=[Depends(bearer_device)])
-    async def get_run(run_id: str) -> dict:
-        run = db.get_run(run_id)
+    @app.get("/api/v1/runs/{run_id}", response_model=RunOut)
+    async def get_run(
+        run_id: str,
+        device_id: str = Depends(bearer_device),
+    ) -> dict:
+        run = db.get_run(run_id, device_id)
         if not run:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
         return run
@@ -388,9 +404,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post(
         "/api/v1/runs/{run_id}/commands",
         response_model=RunOut,
-        dependencies=[Depends(bearer_device)],
     )
-    async def run_command(run_id: str, body: RunCommand) -> dict:
+    async def run_command(
+        run_id: str,
+        body: RunCommand,
+        device_id: str = Depends(bearer_device),
+    ) -> dict:
+        if not db.get_run(run_id, device_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
         try:
             return await manager.command(run_id, body.command, body.instruction)
         except KeyError:
@@ -405,7 +426,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         auth: AuthContext = Depends(bearer_auth),
         last_event_id: int | None = Header(default=None),
     ):
-        if not db.get_run(run_id):
+        if not db.get_run(run_id, auth.device_id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
         await acquire_event_stream(auth.device_id)
 

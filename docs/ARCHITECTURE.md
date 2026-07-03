@@ -42,6 +42,12 @@ If the token expires or the device is revoked, the stream ends and Android must 
 pair again. The live tail still uses a lightweight DB polling loop; replacing it with an
 in-process notify/condition is the next reliability improvement.
 
+Sessions are owned by the paired device that created them. Run ownership is inherited
+through the session. Session/run lists, message reads, context reads/compression, run
+creation, run reads, run commands, and event streams are filtered by the authenticated
+device ID. This keeps a second paired phone from reading or controlling another device's
+work even though both devices belong to the same companion.
+
 Common run events:
 
 - `run.started|run.thinking|run.paused|run.resumed|run.completed|run.failed|run.cancelled`
@@ -90,6 +96,8 @@ Access tokens expire after fifteen minutes. Refresh tokens are rotated and revoc
 Android encrypts the refresh token with an AES-GCM key stored in Android Keystore.
 Admin-authenticated device revocation marks the device and all of its existing auth
 tokens revoked; subsequent access-token authentication and refresh attempts fail.
+Revocation does not delete existing sessions/runs; it prevents that device from
+authenticating. Existing sessions remain owned by their original `device_id`.
 When refresh fails with a revoked or expired token, Android clears the stale device
 credentials, keeps the last server URL in the pairing form, and requires a fresh one-use
 pairing code.

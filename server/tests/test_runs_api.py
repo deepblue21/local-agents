@@ -38,6 +38,14 @@ def auth_headers(client: TestClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {tokens['access_token']}"}
 
 
+def auth_headers_for(client: TestClient, device_name: str) -> dict[str, str]:
+    code = client.post("/api/v1/admin/pairing", headers={"X-Admin-Token": ADMIN}).json()["code"]
+    tokens = client.post(
+        "/api/v1/pair/exchange", json={"code": code, "device_name": device_name}
+    ).json()
+    return {"Authorization": f"Bearer {tokens['access_token']}"}
+
+
 def new_run(client: TestClient, headers: dict[str, str]) -> dict:
     session = client.post("/api/v1/sessions", headers=headers, json={"title": "S"}).json()
     return client.post(
@@ -144,3 +152,44 @@ def test_create_run_persists_prompt_as_user_message(tmp_path):
     ).json()
     assert [m["role"] for m in messages] == ["user"]
     assert messages[0]["content"] == "remember me"
+
+
+def test_sessions_runs_and_controls_are_scoped_to_owning_device(tmp_path):
+    client = make_client_no_worker(tmp_path)
+    owner_headers = auth_headers_for(client, "Owner phone")
+    other_headers = auth_headers_for(client, "Other phone")
+
+    session = client.post(
+        "/api/v1/sessions", headers=owner_headers, json={"title": "Private"}
+    ).json()
+    run = client.post(
+        f"/api/v1/sessions/{session['id']}/runs",
+        headers=owner_headers,
+        json={"prompt": "secret task", "model": "qwen3", "provider": "ollama"},
+    ).json()
+
+    assert client.get("/api/v1/sessions", headers=owner_headers).json()[0]["id"] == session["id"]
+    assert client.get("/api/v1/runs", headers=owner_headers).json()[0]["id"] == run["id"]
+
+    assert client.get("/api/v1/sessions", headers=other_headers).json() == []
+    assert client.get("/api/v1/runs", headers=other_headers).json() == []
+    assert client.get(
+        f"/api/v1/sessions/{session['id']}/messages", headers=other_headers
+    ).status_code == 404
+    assert client.get(
+        f"/api/v1/sessions/{session['id']}/context", headers=other_headers
+    ).status_code == 404
+    assert client.post(
+        f"/api/v1/sessions/{session['id']}/runs",
+        headers=other_headers,
+        json={"prompt": "take over", "model": "qwen3", "provider": "ollama"},
+    ).status_code == 404
+    assert client.get(f"/api/v1/runs/{run['id']}", headers=other_headers).status_code == 404
+    assert client.post(
+        f"/api/v1/runs/{run['id']}/commands",
+        headers=other_headers,
+        json={"command": "cancel"},
+    ).status_code == 404
+    assert client.get(
+        f"/api/v1/runs/{run['id']}/events", headers=other_headers
+    ).status_code == 404

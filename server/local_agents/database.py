@@ -56,7 +56,7 @@ class Database:
         );
         CREATE TABLE IF NOT EXISTS sessions (
           id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL
+          updated_at TEXT NOT NULL, owner_device_id TEXT
         );
         CREATE TABLE IF NOT EXISTS messages (
           id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL,
@@ -83,12 +83,30 @@ class Database:
         );
         CREATE INDEX IF NOT EXISTS run_events_run_seq ON run_events(run_id, seq);
         CREATE INDEX IF NOT EXISTS runs_status_created ON runs(status, created_at);
+        CREATE INDEX IF NOT EXISTS sessions_owner_updated ON sessions(owner_device_id, updated_at);
         """
         with self.connect() as conn:
             conn.executescript(schema)
+            self._migrate_session_owner(conn)
             conn.execute(
                 "UPDATE runs SET status=?, updated_at=? WHERE status=?",
                 (RunStatus.PAUSED, now_iso(), RunStatus.RUNNING),
+            )
+
+    def _migrate_session_owner(self, conn: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "owner_device_id" not in columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN owner_device_id TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS sessions_owner_updated ON sessions(owner_device_id, updated_at)"
+        )
+        active_devices = conn.execute(
+            "SELECT id FROM devices WHERE revoked_at IS NULL ORDER BY created_at"
+        ).fetchall()
+        if len(active_devices) == 1:
+            conn.execute(
+                "UPDATE sessions SET owner_device_id=? WHERE owner_device_id IS NULL",
+                (active_devices[0]["id"],),
             )
 
     @staticmethod
@@ -247,20 +265,23 @@ class Database:
             "run_events": max(event_cursor.rowcount, 0),
         }
 
-    def create_session(self, title: str) -> dict:
+    def create_session(self, title: str, owner_device_id: str | None = None) -> dict:
         session_id = str(uuid.uuid4())
         timestamp = now_iso()
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO sessions(id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (session_id, title, timestamp, timestamp),
+                """INSERT INTO sessions(id, title, created_at, updated_at, owner_device_id)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (session_id, title, timestamp, timestamp, owner_device_id),
             )
         return self.get_session(session_id)
 
-    def get_session(self, session_id: str) -> dict | None:
+    def get_session(self, session_id: str, owner_device_id: str | None = None) -> dict | None:
+        owner_clause = " AND s.owner_device_id=?" if owner_device_id is not None else ""
+        params = (session_id, owner_device_id) if owner_device_id is not None else (session_id,)
         with self.connect() as conn:
             row = conn.execute(
-                """SELECT s.*, COALESCE(t.tool_count, 0) AS tool_count
+                f"""SELECT s.*, COALESCE(t.tool_count, 0) AS tool_count
                    FROM sessions s
                    LEFT JOIN (
                      SELECT r.session_id, COUNT(*) AS tool_count
@@ -269,15 +290,17 @@ class Database:
                      WHERE e.type = 'tool.started'
                      GROUP BY r.session_id
                    ) t ON t.session_id = s.id
-                   WHERE s.id=?""",
-                (session_id,),
+                   WHERE s.id=?{owner_clause}""",
+                params,
             ).fetchone()
             return dict(row) if row else None
 
-    def list_sessions(self) -> list[dict]:
+    def list_sessions(self, owner_device_id: str | None = None) -> list[dict]:
+        owner_clause = " WHERE s.owner_device_id=?" if owner_device_id is not None else ""
+        params = (owner_device_id,) if owner_device_id is not None else ()
         with self.connect() as conn:
             rows = conn.execute(
-                """SELECT s.*, COALESCE(t.tool_count, 0) AS tool_count
+                f"""SELECT s.*, COALESCE(t.tool_count, 0) AS tool_count
                    FROM sessions s
                    LEFT JOIN (
                      SELECT r.session_id, COUNT(*) AS tool_count
@@ -286,7 +309,10 @@ class Database:
                      WHERE e.type = 'tool.started'
                      GROUP BY r.session_id
                    ) t ON t.session_id = s.id
+                   {owner_clause}
                    ORDER BY s.updated_at DESC"""
+                ,
+                params,
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -363,16 +389,34 @@ class Database:
         self.add_event(run_id, "run.queued", {"model": model, "provider": provider})
         return self.get_run(run_id)
 
-    def get_run(self, run_id: str) -> dict | None:
+    def get_run(self, run_id: str, owner_device_id: str | None = None) -> dict | None:
         with self.connect() as conn:
-            row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+            if owner_device_id is None:
+                row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+            else:
+                row = conn.execute(
+                    """SELECT r.* FROM runs r
+                       JOIN sessions s ON s.id = r.session_id
+                       WHERE r.id=? AND s.owner_device_id=?""",
+                    (run_id, owner_device_id),
+                ).fetchone()
             return dict(row) if row else None
 
-    def list_runs(self, limit: int = 100) -> list[dict]:
+    def list_runs(self, limit: int = 100, owner_device_id: str | None = None) -> list[dict]:
+        bounded_limit = max(1, min(limit, 200))
         with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (max(1, min(limit, 200)),)
-            ).fetchall()
+            if owner_device_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (bounded_limit,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT r.* FROM runs r
+                       JOIN sessions s ON s.id = r.session_id
+                       WHERE s.owner_device_id=?
+                       ORDER BY r.created_at DESC LIMIT ?""",
+                    (owner_device_id, bounded_limit),
+                ).fetchall()
             return [dict(row) for row in rows]
 
     def next_queued_run(self) -> dict | None:
