@@ -114,3 +114,4 @@ Kısa bir "veri toplamıyoruz / veriler kullanıcının kendi sunucusunda kalır
 - `android/keystore.properties.example` — imza şablonu.
 - `docs/SECURITY_AUDIT.md` — güvenlik incelemesi.
 - `design/icon/` — uygulama ikonu setleri.
+- `docs/ANDROID_PLAYWRIGHT_SMOKE.md` — opt-in Android Playwright duman testi.

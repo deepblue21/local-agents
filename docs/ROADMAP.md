@@ -230,6 +230,10 @@ Tamamlananlar:
 - **Reliability — M9 final** — SSE live tail artık 300 ms DB polling yerine in-process
   run-event notifier ile uyanır; replay garantisi DB'den korunur, canlı eventler push
   benzeri şekilde stream'e düşer.
+- **Android Playwright smoke** — Native Compose testlerin yerine geçmeyen, opt-in çalışan
+  `e2e/android-smoke` hattı eklendi: APK kurar, `localagents://pair` deep link'ini açar,
+  host onay panelini doğrular ve screenshot artifact üretir. ADB/emülatör bağımlılığı
+  nedeniyle default CI'a bağlanmadı.
 
 Kalan büyük dış-servis parçası: app tamamen kapalıyken server-initiated push için
 Firebase/FCM project credentials ve companion-side push token akışı.
@@ -249,7 +253,8 @@ Firebase/FCM project credentials ve companion-side push token akışı.
   ve `docs/RELEASE.md` (imzalama adımları, mağaza listesi taslağı, izin/veri-güvenliği
   notları, yayın öncesi checklist). Minified R8 release APK ~2.9 MB üretiliyor.
   Kalan: gerçek yükleme anahtarı üretimi, mağaza ekran görüntüleri/gizlilik politikası
-  URL'si, cihazda dumanla test, Play App Signing ile gönderim.
+  URL'si, gerçek cihazda duman testi, Play App Signing ile gönderim. Opt-in Playwright
+  Android smoke scaffold'ı hazır; gerçek cihaz/emülatör üzerinde çalıştırılmalı.
 - **Faz 6 — Production hardening.** Kapanan ilk parça: CI, compose healthcheck,
   seccomp deny profili, retention cleanup, SSE stream cap/revalidation ve deep-link host
   onayı. Kalan: verified Android App Links (`https` + `assetlinks.json` +
