@@ -91,6 +91,7 @@ gaps would matter the moment the service is exposed through the Cloudflare tunne
 | M12 | Medium | Web | Resolved by design: browser refresh token is HttpOnly; access token is memory-only |
 | L8 | Low | Server | Resolved: retention sweeps periodically, not only at startup |
 | L9 | Low | Build | Resolved: `android/gradlew` is committed executable, so the CI Android job runs |
+| L10 | Low | CI | Resolved: CI installs ripgrep, so the ReDoS-mitigation tests actually run |
 
 ---
 
@@ -368,6 +369,11 @@ events wake the stream without a fixed 300 ms DB polling loop.
   job invokes `./gradlew` directly, so it failed with "Permission denied" and the Android
   unit tests were not actually running. The file is now committed executable and
   `test_gradle_wrapper_is_executable` fails if that regresses.
+- **L10** — Resolved: CI did not install ripgrep. `search_files` shells out to it, which
+  is the whole of the M3 ReDoS mitigation, so the three tests pinning that control failed
+  with a `503` on every CI run and the control went unverified. The runner *image* has
+  ripgrep; the CI job runs the tests on the host, which did not. Both this and L9 mean two
+  of the three CI jobs were reporting on work they never performed.
 - **L7** — Resolved for the active Docker contexts: Compose builds `./server` and `./runner`,
   and both contexts include `.dockerignore`.
 

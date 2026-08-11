@@ -18,6 +18,12 @@ jobs:
             server/requirements.lock
             server/requirements-dev.lock
             runner/requirements.lock
+      - name: Install ripgrep
+        # `search_files` shells out to ripgrep, which is what keeps an untrusted regex
+        # off Python's backtracking engine (SECURITY_AUDIT M3). The runner image ships
+        # it, but this job runs the tests on the host, where it is absent — so those
+        # three tests failed here and the ReDoS control was never actually verified.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep
       - name: Install dependencies
         working-directory: server
         run: |

@@ -45,6 +45,17 @@ def test_github_actions_runs_the_web_console_end_to_end_suite():
     assert (ROOT / "e2e/web-console/tests/console.spec.ts").exists()
 
 
+def test_github_actions_installs_ripgrep_for_the_runner_tests():
+    """`search_files` shells out to ripgrep, and the tests assert its real behaviour.
+
+    Without the binary on the CI host those tests fail with a 503, so the ReDoS
+    control they exist to pin (M3) goes unverified on every run.
+    """
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert "install -y --no-install-recommends ripgrep" in workflow
+
+
 def test_gradle_wrapper_is_executable():
     """CI invokes ./gradlew directly; a non-executable mode fails the Android job."""
     wrapper = ROOT / "android/gradlew"
