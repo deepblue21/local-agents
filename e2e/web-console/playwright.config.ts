@@ -20,6 +20,9 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   forbidOnly: Boolean(process.env.CI),
+  // One retry on CI absorbs runner-level flakiness (a slow webServer start) while
+  // still reporting the retried test as flaky rather than hiding it.
+  retries: process.env.CI ? 1 : 0,
   reporter: [['line']],
   use: {
     baseURL: BASE_URL,

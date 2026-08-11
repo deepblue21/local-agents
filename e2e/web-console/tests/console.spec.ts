@@ -162,6 +162,35 @@ test('the refresh token is not reachable from page script', async ({ page, reque
   expect(cookies).toContain('la_csrf');
 });
 
+test('rail controls stay inside the rail and remain clickable', async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'the rail only renders on wide viewports');
+  await pair(page, request);
+
+  const rail = await page.locator('.rail').boundingBox();
+  expect(rail).not.toBeNull();
+  for (const button of await page.locator('.rail-foot button').all()) {
+    const box = await button.boundingBox();
+    // A grid item defaulting to min-width:auto used to push this row past the rail,
+    // where the main column covered it and swallowed the click.
+    expect(box!.x + box!.width).toBeLessThanOrEqual(rail!.x + rail!.width + 1);
+  }
+
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await expect(page.locator('.view')).toContainText('Session security');
+});
+
+test('session actions are reachable without hover', async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', 'touch viewports have no hover state');
+  await pair(page, request);
+  await runPrompt(page, 'e2e touch actions');
+  await openSessions(page);
+
+  // Hover-only affordances are invisible forever on a touch device.
+  const actions = sessionRow(page, 'e2e touch actions').getByRole('button', { name: 'Delete' });
+  await expect(actions).toBeVisible();
+  expect(await actions.evaluate((node) => getComputedStyle(node).opacity)).toBe('1');
+});
+
 test('the console page ships no inline script and declares a strict CSP', async ({ page }) => {
   const response = await page.goto('/app');
   const csp = response?.headers()['content-security-policy'] ?? '';
