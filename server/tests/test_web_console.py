@@ -199,13 +199,45 @@ def test_web_refresh_rotates_and_rejects_replay(tmp_path):
         assert first.status_code == 200
         assert client.cookies.get(REFRESH_COOKIE) != stale_refresh
 
-        # Replaying the consumed refresh token must fail and clear the browser state.
+        # Replaying the consumed refresh token must fail. It must *not* clear the
+        # cookies: see test_a_lost_refresh_race_does_not_clear_the_winner_s_cookie.
         client.cookies.set(REFRESH_COOKIE, stale_refresh, path="/api/v1/web")
         replay = client.post(
             "/api/v1/web/refresh", headers={"X-CSRF-Token": client.cookies.get(CSRF_COOKIE)}
         )
         assert replay.status_code == 401
-        assert any("Max-Age=0" in value for value in replay.headers.get_list("set-cookie"))
+
+
+def test_a_lost_refresh_race_does_not_clear_the_winner_s_cookie(tmp_path):
+    """Two tabs reloading together must not log the whole browser out.
+
+    Both present the same refresh token; one rotates it and the other gets a 401.
+    If that 401 cleared the cookies it would delete the token the winning tab had
+    just been issued, ending the session for every tab at once.
+    """
+    with make_client(tmp_path) as client:
+        _, csrf = start_web_session(client)
+        shared_refresh = client.cookies.get(REFRESH_COOKIE)
+
+        winner = client.post("/api/v1/web/refresh", headers={"X-CSRF-Token": csrf})
+        assert winner.status_code == 200
+        rotated = client.cookies.get(REFRESH_COOKIE)
+        assert rotated != shared_refresh
+
+        # The second tab still holds the now-spent token.
+        client.cookies.set(REFRESH_COOKIE, shared_refresh, path="/api/v1/web")
+        loser = client.post(
+            "/api/v1/web/refresh", headers={"X-CSRF-Token": client.cookies.get(CSRF_COOKIE)}
+        )
+        assert loser.status_code == 401
+        assert not loser.headers.get_list("set-cookie")
+
+        # The rotated token is untouched, so a retry succeeds.
+        client.cookies.set(REFRESH_COOKIE, rotated, path="/api/v1/web")
+        retry = client.post(
+            "/api/v1/web/refresh", headers={"X-CSRF-Token": client.cookies.get(CSRF_COOKIE)}
+        )
+        assert retry.status_code == 200
 
 
 def test_web_refresh_without_a_session_is_rejected(tmp_path):

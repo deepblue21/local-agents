@@ -103,21 +103,30 @@ export class Api {
   }
 
   async _doRefresh() {
-    const csrf = this.csrfToken;
-    if (!csrf) throw new SessionExpiredError('no web session');
-    const response = await fetch('/api/v1/web/refresh', {
-      method: 'POST',
-      headers: { 'X-CSRF-Token': csrf },
-      credentials: 'same-origin',
-    });
-    if (!response.ok) {
-      this.accessToken = '';
-      throw new SessionExpiredError(await detail(response, 'web session expired'));
+    // Refresh tokens rotate, so two tabs waking together race: one wins and the
+    // other's token is already spent. The loser retries once, by which point the
+    // winner's rotated cookie is in the shared jar and works.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const csrf = this.csrfToken;
+      if (!csrf) throw new SessionExpiredError('no web session');
+      const response = await fetch('/api/v1/web/refresh', {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': csrf },
+        credentials: 'same-origin',
+      });
+      if (response.ok) {
+        const data = await response.json();
+        this.accessToken = data.access_token;
+        this.deviceId = data.device_id;
+        return data;
+      }
+      if (response.status !== 401 || attempt === 1) {
+        this.accessToken = '';
+        throw new SessionExpiredError(await detail(response, 'web session expired'));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    const data = await response.json();
-    this.accessToken = data.access_token;
-    this.deviceId = data.device_id;
-    return data;
+    throw new SessionExpiredError('web session expired');
   }
 
   async logout() {

@@ -47,9 +47,49 @@ def test_forwarded_headers_are_used_from_a_trusted_peer():
     ) == "198.51.100.9"
 
 
-def test_x_forwarded_for_uses_the_left_most_entry():
+def test_x_forwarded_for_uses_the_right_most_untrusted_entry():
+    """The left-most entry is client-supplied and must never key the bucket.
+
+    Proxies *append* to `X-Forwarded-For` (nginx's `$proxy_add_x_forwarded_for` is
+    the common case), so a client that sends the header itself seeds the left of the
+    list. Reading from the left would let it rotate the value per request and get an
+    unlimited number of rate-limit buckets — the very bypass the trusted-proxy check
+    exists to close.
+    """
     trusted = networks("203.0.113.0/24")
-    request = make_request(headers={"X-Forwarded-For": "198.51.100.9, 203.0.113.5"})
+
+    # Chain: [client-supplied lie], real client, trusted hop.
+    request = make_request(headers={"X-Forwarded-For": "1.2.3.4, 198.51.100.9, 203.0.113.5"})
+    assert client_key(request, trusted) == "198.51.100.9"
+
+
+def test_spoofed_forwarded_for_prefix_cannot_rotate_the_bucket():
+    trusted = networks("203.0.113.0/24")
+    keys = {
+        client_key(
+            make_request(headers={"X-Forwarded-For": f"{spoof}, 198.51.100.9, 203.0.113.5"}),
+            trusted,
+        )
+        for spoof in ("1.2.3.4", "5.6.7.8", "9.9.9.9")
+    }
+
+    assert keys == {"198.51.100.9"}
+
+
+def test_forwarded_for_of_only_trusted_hops_falls_back_to_the_peer():
+    trusted = networks("203.0.113.0/24")
+    request = make_request(headers={"X-Forwarded-For": "203.0.113.7, 203.0.113.5"})
+
+    assert client_key(request, trusted) == "203.0.113.5"
+
+
+def test_overwriting_headers_are_taken_whole():
+    """Cloudflare replaces `CF-Connecting-IP` outright, so its value is the client."""
+    trusted = networks("203.0.113.0/24")
+    request = make_request(
+        headers={"CF-Connecting-IP": "198.51.100.9", "X-Forwarded-For": "1.2.3.4"}
+    )
+
     assert client_key(request, trusted) == "198.51.100.9"
 
 

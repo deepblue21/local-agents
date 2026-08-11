@@ -198,9 +198,20 @@ or a tailnet address receives it straight from the client.
 **Fix:** forwarded headers (`CF-Connecting-IP`, `X-Forwarded-For`, `X-Real-IP`) are read
 only when the immediate peer falls inside `LOCAL_AGENTS_TRUSTED_PROXY_NETWORKS`, which
 defaults to empty — trust nobody. Otherwise the socket peer keys the bucket. Operators
-behind a tunnel set the variable to that proxy's network. Pinned by
-`test_forwarded_client_headers_are_ignored_without_a_trusted_proxy` and
-`server/tests/test_rate_limit.py`.
+behind a tunnel set the variable to that proxy's network.
+
+The two header families are handled differently, which matters: `CF-Connecting-IP` and
+`X-Real-IP` are **overwritten** by the proxy, so their whole value is the proxy's own
+statement about the client. `X-Forwarded-For` is **appended** to (nginx's
+`$proxy_add_x_forwarded_for` is the common case), so a client that sends the header
+itself seeds the left of the list. Reading the left-most entry — the conventional
+"original client" rule — would leave the bypass fully intact for any non-Cloudflare
+proxy. The chain is therefore walked from the right, discarding hops that are
+themselves trusted proxies, and the first remaining entry keys the bucket.
+
+Pinned by `test_forwarded_client_headers_are_ignored_without_a_trusted_proxy`,
+`test_x_forwarded_for_uses_the_right_most_untrusted_entry`, and
+`test_spoofed_forwarded_for_prefix_cannot_rotate_the_bucket`.
 
 ---
 

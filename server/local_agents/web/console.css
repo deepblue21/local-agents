@@ -295,7 +295,11 @@ textarea { resize: none; line-height: 1.5; }
 .banner.bad { background: color-mix(in srgb, var(--coral) 14%, var(--surface)); color: var(--coral); }
 .banner button { background: none; border: 0; color: inherit; text-decoration: underline; padding: 0; }
 
-.view { flex: 1; overflow-y: auto; min-height: 0; }
+/* A flex column, so a view that wants to own its own scrolling (the chat) can be
+   bounded by the viewport. As a block container it sized itself to its content, the
+   chat's inner scroller never became scrollable, and auto-follow scrolled an element
+   that could not move — the transcript simply stopped following the stream. */
+.view { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
 .view-inner { padding: 16px; display: grid; gap: var(--gap); align-content: start; max-width: 900px; margin: 0 auto; width: 100%; }
 
 .tabbar {
@@ -351,7 +355,9 @@ textarea { resize: none; line-height: 1.5; }
 /* ---------- chat ---------- */
 
 .chat { display: flex; flex-direction: column; min-height: 0; flex: 1; }
-.chat-scroll { flex: 1; overflow-y: auto; }
+/* min-height:0 is required: a column flex item defaults to min-height:auto, which
+   refuses to shrink below its content and so never overflows. */
+.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .chat-inner { padding: 16px; display: grid; gap: 12px; max-width: 900px; margin: 0 auto; width: 100%; }
 
 .msg { display: grid; gap: 5px; max-width: 88%; }
@@ -497,4 +503,13 @@ dialog .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; mar
 .host-preview {
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--night); padding: 11px 12px; display: grid; gap: 5px;
+}
+
+.centered { text-align: center; }
+
+/* The QR needs a white plate to stay scannable on a dark background. It cannot be an
+   inline style: `style-src 'self'` refuses those. */
+.qr {
+  display: block; width: 220px; height: 220px; margin: 0 auto;
+  background: #fff; padding: 8px; border-radius: 8px;
 }

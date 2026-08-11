@@ -420,6 +420,16 @@ class LocalAgentsViewModel(app: Application) : AndroidViewModel(app) {
                 activeRun = run
                 runs.add(0, run)
                 LocalAgentsWidgetUpdater.updateAll(getApplication())
+                // The companion names an untitled conversation after its first prompt,
+                // so the local copy is stale the moment the run is created.
+                try {
+                    val refreshed = withAuth { token -> client.listSessions(settings.baseUrl, token) }
+                    val index = sessions.indexOfFirst { it.id == session.id }
+                    val updated = refreshed.firstOrNull { it.id == session.id }
+                    if (index >= 0 && updated != null) sessions[index] = updated
+                    if (selectedSession?.id == session.id && updated != null) selectedSession = updated
+                } catch (_: Exception) {
+                }
                 try {
                     sessionContext = withAuth { token ->
                         client.sessionContext(settings.baseUrl, token, session.id)

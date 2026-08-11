@@ -67,17 +67,18 @@ function renderPairing(data) {
   const expires = new Date(data.expires_at);
   clear(output).append(
     el('div', { class: 'card stack' },
+      // Styling lives in console.css: `style-src 'self'` refuses inline style, and
+      // the QR needs its white plate to stay scannable on a dark background.
       el('img', {
         src: data.qr_data_url,
         alt: 'Eşleştirme QR kodu',
         width: '220',
         height: '220',
-        style: 'display:block;margin:0 auto;background:#fff;padding:8px;border-radius:8px;width:220px;height:220px',
+        class: 'qr',
       }),
       el('div', { class: 'code-input mono', text: groupCode(data.code) }),
       el('div', {
-        class: 'tiny muted',
-        style: 'text-align:center',
+        class: 'tiny muted centered',
         text: `Tek kullanımlık · geçerlilik: ${expires.toLocaleString()}`,
       }),
     ),
@@ -108,15 +109,19 @@ function renderDevices(devices) {
           class: 'btn small danger',
           type: 'button',
           text: 'İptal et',
+          // `event.currentTarget` is null once the handler has awaited, so the
+          // button is captured up front; reading it after the await threw and left
+          // a failed revoke permanently disabled.
           onClick: async (event) => {
-            event.currentTarget.disabled = true;
+            const button = event.currentTarget;
+            button.disabled = true;
             try {
               await call(`/api/v1/admin/devices/${device.id}/revoke`, 'POST');
               toast('Cihaz iptal edildi.');
               await loadDevices();
             } catch (error) {
               toast(error.message, 'bad');
-              event.currentTarget.disabled = false;
+              button.disabled = false;
             }
           },
         }),

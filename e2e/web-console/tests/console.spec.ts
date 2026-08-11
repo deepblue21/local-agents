@@ -9,6 +9,25 @@ import { ADMIN_TOKEN } from '../playwright.config';
  * without a real model.
  */
 
+/**
+ * Record CSP violations for the lifetime of the page.
+ *
+ * A refused inline style does not fail any functional assertion — the element is
+ * still there and still clickable — so without this a tightened policy can silently
+ * strip styling that matters (the QR plate that keeps the code scannable).
+ */
+async function collectCspViolations(page: Page): Promise<() => Promise<string[]>> {
+  await page.addInitScript(() => {
+    (window as never as { __csp: string[] }).__csp = [];
+    document.addEventListener('securitypolicyviolation', (event) => {
+      (window as never as { __csp: string[] }).__csp.push(
+        `${event.effectiveDirective} blocked ${event.blockedURI} at ${event.sourceFile}:${event.lineNumber}`,
+      );
+    });
+  });
+  return () => page.evaluate(() => (window as never as { __csp?: string[] }).__csp ?? []);
+}
+
 async function pairingCode(request: APIRequestContext): Promise<string> {
   const response = await request.post('/api/v1/admin/pairing', {
     headers: { 'X-Admin-Token': ADMIN_TOKEN },
@@ -210,13 +229,73 @@ test('agent output is rendered as text, never as markup', async ({ page, request
 });
 
 test('the admin page mints a pairing code with the admin token', async ({ page }) => {
+  const violations = await collectCspViolations(page);
   await page.goto('/admin');
   await page.locator('#admin-token').fill(ADMIN_TOKEN);
   await page.getByRole('button', { name: 'Eşleştirme kodu üret' }).click();
-  await expect(page.getByAltText('Eşleştirme QR kodu')).toBeVisible();
+
+  const qr = page.getByAltText('Eşleştirme QR kodu');
+  await expect(qr).toBeVisible();
+  // The white plate must survive the policy, or the code is unscannable on a dark
+  // background. An inline style would be refused here.
+  expect(await qr.evaluate((node) => getComputedStyle(node).backgroundColor))
+    .toBe('rgb(255, 255, 255)');
 
   await page.getByRole('button', { name: 'Cihazlar' }).click();
   await expect(page.locator('#output')).toBeVisible();
+  expect(await violations()).toEqual([]);
+});
+
+test('the console renders without tripping its own CSP', async ({ page, request }) => {
+  const violations = await collectCspViolations(page);
+  await pair(page, request);
+  await runPrompt(page, 'e2e csp task');
+
+  await page.getByRole('button', { name: 'Models' }).first().click();
+  await page.getByRole('button', { name: 'Settings' }).first().click();
+  await expect(page.locator('.swatch').first()).toBeVisible();
+
+  expect(await violations()).toEqual([]);
+});
+
+test('auto-follow resumes after the operator scrolls back down', async ({ page, request }) => {
+  const send = async (prompt: string) => {
+    const composer = page.getByRole('textbox', { name: 'Describe the task…' });
+    await expect(composer).toBeEnabled();
+    await composer.fill(prompt);
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.locator('.msg.agent .bubble').last())
+      .toContainText('test yanıtıdır', { timeout: 30_000 });
+  };
+  const scroll = page.locator('.chat-scroll');
+
+  await pair(page, request);
+  // The conversation has to actually overflow, or "scrolled to the bottom" is
+  // trivially true and the assertion below proves nothing.
+  await runPrompt(page, `e2e scroll task\n${'filler line\n'.repeat(80)}`);
+  const overflows = await scroll.evaluate((node) => node.scrollHeight > node.clientHeight + 200);
+  expect(overflows).toBe(true);
+
+  // Scroll up, then let a run re-render the chat while scrolled away. That render
+  // replaces the scroll container, and the listener that notices a scroll back down
+  // used to be attached only while already pinned — so it was never re-attached and
+  // auto-follow could not recover for the rest of the session.
+  await scroll.evaluate((node) => { node.scrollTop = 0; });
+  await send(`e2e scroll while unpinned\n${'filler line\n'.repeat(80)}`);
+
+  await scroll.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+  await page.waitForTimeout(150);
+
+  await send(`e2e scroll should follow again\n${'filler line\n'.repeat(80)}`);
+  // Polled rather than sampled once: the scroll happens in a requestAnimationFrame
+  // after the final render, so a single read can land a frame early. With the bug
+  // the transcript never reaches the bottom at all, so this still fails.
+  await expect
+    .poll(
+      () => scroll.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight < 80),
+      { timeout: 5_000 },
+    )
+    .toBe(true);
 });
 
 test('the admin page rejects a wrong admin token', async ({ page }) => {

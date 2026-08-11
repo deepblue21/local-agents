@@ -1131,8 +1131,14 @@ function renderBanner() {
 function renderView() {
   const view = clear(dom.view);
   view.className = 'view';
+  if (state.view !== 'chat') chatScrollNode = null;
   switch (state.view) {
-    case 'chat': view.append(chatView()); break;
+    case 'chat':
+      view.append(chatView());
+      // Only meaningful once the node is attached, which is why it is not done
+      // inside chatView().
+      scrollChatToBottom();
+      break;
     case 'runs': view.append(runsView()); break;
     case 'models': view.append(modelsView()); break;
     case 'settings': view.append(settingsView()); break;
@@ -1238,7 +1244,7 @@ function chatView() {
 
   scroll.append(inner);
   container.append(scroll);
-  queueScrollToBottom(scroll);
+  trackChatScroll(scroll);
   return container;
 }
 
@@ -1275,12 +1281,31 @@ function toolBlock(label, value, isError) {
   );
 }
 
+/**
+ * Only http(s) may become a live link.
+ *
+ * Source URLs originate from whatever the agent fetched, so a `javascript:` or
+ * `data:` value can reach here. CSP would stop it executing, but a link should not
+ * depend on a second line of defence to be safe.
+ */
+function safeHttpUrl(value) {
+  try {
+    const parsed = new URL(String(value), location.origin);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function sourceList() {
   const list = el('div', { class: 'sources' });
   for (const source of state.sources) {
+    const href = safeHttpUrl(source.url);
     // rel/target keep an agent-supplied link from reaching back into this page.
     list.append(el('div', { class: 'source' },
-      el('a', { href: source.url, target: '_blank', rel: 'noopener noreferrer nofollow', text: source.title }),
+      href
+        ? el('a', { href, target: '_blank', rel: 'noopener noreferrer nofollow', text: source.title })
+        : el('span', { class: 'title', text: source.title }),
       el('span', { class: 'url truncate', text: source.url }),
       source.snippet ? el('span', { class: 'tiny dim', text: source.snippet }) : null,
     ));
@@ -1571,15 +1596,37 @@ function settingGroup(title, lines) {
 // ---------------------------------------------------------------- render loop
 
 let pinScroll = true;
+let chatScrollNode = null;
+let autoScrollTop = -1;
 
-function queueScrollToBottom(scroll) {
-  if (!pinScroll) return;
-  requestAnimationFrame(() => {
-    scroll.scrollTop = scroll.scrollHeight;
-  });
+/**
+ * Track a freshly built chat scroller.
+ *
+ * The listener is attached unconditionally: attaching it only while pinned meant
+ * that once the operator scrolled up, nothing was left to notice them scrolling back
+ * down, so auto-follow could never resume for the rest of the session.
+ *
+ * The scroll itself cannot happen here — the element is not in the document yet, so
+ * its scrollHeight is 0. `renderView` scrolls it once it is attached.
+ */
+function trackChatScroll(scroll) {
   scroll.addEventListener('scroll', () => {
+    // Scroll events are delivered asynchronously. When the next streaming delta has
+    // already grown the transcript, an event from *our own* scroll-to-bottom reports
+    // a large gap and would unpin auto-follow mid-run, with nothing to turn it back
+    // on. Events at the position we last set are therefore not user intent.
+    if (scroll.scrollTop === autoScrollTop) return;
     pinScroll = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 80;
   }, { passive: true });
+  chatScrollNode = scroll;
+  autoScrollTop = -1;
+}
+
+/** Follow the transcript, unless the operator has deliberately scrolled away. */
+function scrollChatToBottom() {
+  if (!pinScroll || !chatScrollNode?.isConnected) return;
+  chatScrollNode.scrollTop = chatScrollNode.scrollHeight;
+  autoScrollTop = chatScrollNode.scrollTop;
 }
 
 function scheduleRender() {

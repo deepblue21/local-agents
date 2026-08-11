@@ -216,3 +216,32 @@ def test_runs_can_be_filtered_by_session(tmp_path):
 
     scoped = client.get(f"/api/v1/runs?session_id={first['id']}", headers=headers).json()
     assert [run["prompt"] for run in scoped] == ["one"]
+
+
+def test_session_filter_survives_newer_runs_elsewhere(tmp_path):
+    """The filter must be applied in SQL, not after the page limit.
+
+    Filtering a `LIMIT`-ed page in Python makes a quiet conversation's runs vanish as
+    soon as enough newer runs exist in other conversations.
+    """
+    client = make_client_no_worker(tmp_path)
+    headers = auth_headers_for(client)
+    quiet = create_session(client, headers, title="Quiet")
+    busy = create_session(client, headers, title="Busy")
+
+    create_run(client, headers, quiet["id"], prompt="the only quiet run")
+    for index in range(120):
+        create_run(client, headers, busy["id"], prompt=f"busy {index}")
+
+    scoped = client.get(f"/api/v1/runs?session_id={quiet['id']}", headers=headers).json()
+    assert [run["prompt"] for run in scoped] == ["the only quiet run"]
+
+
+def test_session_filter_is_scoped_to_the_owning_device(tmp_path):
+    client = make_client_no_worker(tmp_path)
+    owner = auth_headers_for(client, "Phone")
+    other = auth_headers_for(client, "Tablet")
+    session = create_session(client, owner)
+    create_run(client, owner, session["id"], prompt="private")
+
+    assert client.get(f"/api/v1/runs?session_id={session['id']}", headers=other).json() == []

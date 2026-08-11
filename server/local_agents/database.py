@@ -457,21 +457,37 @@ class Database:
                 ).fetchone()
             return dict(row) if row else None
 
-    def list_runs(self, limit: int = 100, owner_device_id: str | None = None) -> list[dict]:
+    def list_runs(
+        self,
+        limit: int = 100,
+        owner_device_id: str | None = None,
+        session_id: str | None = None,
+    ) -> list[dict]:
+        """List runs, newest first.
+
+        The session filter is applied in SQL rather than by the caller: filtering
+        after ``LIMIT`` would silently drop a quiet conversation's runs as soon as
+        newer runs elsewhere fill the page.
+        """
         bounded_limit = max(1, min(limit, 200))
+        clauses = []
+        params: list = []
+        if owner_device_id is not None:
+            clauses.append("s.owner_device_id=?")
+            params.append(owner_device_id)
+        if session_id is not None:
+            clauses.append("r.session_id=?")
+            params.append(session_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(bounded_limit)
         with self.connect() as conn:
-            if owner_device_id is None:
-                rows = conn.execute(
-                    "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (bounded_limit,)
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """SELECT r.* FROM runs r
-                       JOIN sessions s ON s.id = r.session_id
-                       WHERE s.owner_device_id=?
-                       ORDER BY r.created_at DESC LIMIT ?""",
-                    (owner_device_id, bounded_limit),
-                ).fetchall()
+            rows = conn.execute(
+                f"""SELECT r.* FROM runs r
+                    JOIN sessions s ON s.id = r.session_id
+                    {where}
+                    ORDER BY r.created_at DESC LIMIT ?""",
+                tuple(params),
+            ).fetchall()
             return [dict(row) for row in rows]
 
     def next_queued_run(self) -> dict | None:

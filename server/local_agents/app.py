@@ -542,12 +542,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cookie = request.cookies.get(REFRESH_COOKIE, "")
         device_id = db.consume_refresh(cookie) if cookie else None
         if not device_id:
-            failure = JSONResponse(
+            # Deliberately does *not* clear the cookies. Two tabs reloading together
+            # both present the same refresh token; one rotates it and the other gets
+            # this 401. Clearing here would delete the token the winning tab had just
+            # been issued and log the whole browser out. The loser simply retries and
+            # picks up the rotated cookie from the shared jar.
+            return JSONResponse(
                 {"detail": "invalid or expired web session"},
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
-            _clear_web_cookies(failure, secure=_cookie_secure(request))
-            return failure
         bundle = issue_tokens(db, cfg, device_id)
         payload, csrf_token = _web_bundle(bundle)
         response = JSONResponse(payload.model_dump())
@@ -697,10 +700,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session_id: str | None = None,
         device_id: str = Depends(bearer_device),
     ) -> list[dict]:
-        listed = db.list_runs(limit, device_id)
-        if session_id:
-            return [run for run in listed if run["session_id"] == session_id]
-        return listed
+        return db.list_runs(limit, device_id, session_id=session_id)
 
     @app.post(
         "/api/v1/sessions/{session_id}/runs",
