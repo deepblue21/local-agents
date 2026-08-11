@@ -59,6 +59,10 @@ Android Studio'da: **Build > Generate App Bundles or APKs > Generate APKs / Gene
 Not: release derlemesi **R8** ile küçültülür (`isMinifyEnabled = true`,
 `proguard-rules.pro`). APK ~2.9 MB'a iner.
 
+Derleme AGP **8.7.3** ile yapılır; compileSdk 35 bu sürümden itibaren resmen
+desteklendiği için `android.suppressUnsupportedCompileSdk` bayrağına gerek yoktur.
+`BuildConfigTest` bayrağın geri eklenmesini ve AGP'nin geriye alınmasını engeller.
+
 ---
 
 ## 3. Mağaza listesi (taslak)
@@ -140,9 +144,6 @@ Hazır metin `docs/PRIVACY.md` içindedir (TR + EN); yayınlarken bir URL'de bar
 
 Sürüm öncesi karar verilmesi gereken, kodda **kapatılmamış** maddeler:
 
-- **AGP / compileSdk.** `android.suppressUnsupportedCompileSdk=35` ile AGP 8.5.2
-  üzerinde compileSdk 35 kullanılıyor. Uyarıyı bastırmak yerine AGP'yi 8.7+'a almak
-  doğrusudur; Play'in targetSdk 35 zorunluluğu zaten karşılanıyor.
 - **Kaynak küçültme.** `isMinifyEnabled = true` açık, `isShrinkResources` kapalı.
   Açmak APK'yı küçültür ama widget kaynaklarının R8 sonrası gerçek cihazda
   doğrulanmasını gerektirir.
