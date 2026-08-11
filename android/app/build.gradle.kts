@@ -14,8 +14,8 @@ android {
         applicationId = "com.localagents.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.1.9"
+        versionCode = 11
+        versionName = "0.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         setProperty("archivesBaseName", "Local_Agents")
     }
@@ -24,6 +24,18 @@ android {
     // okunur; yoksa yerel yan-yükleme için debug anahtarına düşülür. Bkz. docs/RELEASE.md.
     val keystorePropsFile = rootProject.file("keystore.properties")
     val hasReleaseKeystore = keystorePropsFile.exists()
+
+    // A store upload signed with the debug key is rejected by Play, and the fallback
+    // above makes that failure silent until the upload. Store builds should run with
+    // `-PrequireReleaseSigning=true` so the build stops here instead.
+    val requireReleaseSigning =
+        (project.findProperty("requireReleaseSigning") as String?)?.toBoolean() ?: false
+    if (requireReleaseSigning && !hasReleaseKeystore) {
+        throw GradleException(
+            "android/keystore.properties is missing: a store release cannot be signed with " +
+                "the debug key. See docs/RELEASE.md."
+        )
+    }
 
     signingConfigs {
         create("release") {
@@ -53,6 +65,13 @@ android {
                 "proguard-rules.pro",
             )
         }
+    }
+
+    bundle {
+        // Play would otherwise deliver only the device's current language. The app
+        // declares a locale config for per-app language selection, which needs every
+        // shipped translation present in the installed app.
+        language { enableSplit = false }
     }
 
     compileOptions {

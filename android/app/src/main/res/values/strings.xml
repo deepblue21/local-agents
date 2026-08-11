@@ -187,4 +187,10 @@
     <string name="context_message_count">%1$d mesaj</string>
     <string name="context_summary_active">özet aktif · %1$d/%2$s</string>
     <string name="context_raw_history">ham geçmiş · %1$s</string>
+    <string name="session_rename_title">Oturumu yeniden adlandır</string>
+    <string name="session_delete_title">Oturumu sil</string>
+    <string name="session_delete_body">“%1$s” ve tüm mesajları, çalışmaları ve olayları kalıcı olarak silinecek. Bu işlem geri alınamaz.</string>
+    <string name="action_save">Kaydet</string>
+    <string name="action_cancel">Vazgeç</string>
+    <string name="action_delete">Sil</string>
 </resources>

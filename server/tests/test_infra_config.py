@@ -35,6 +35,24 @@ def test_github_actions_runs_server_runner_and_android_unit_tests():
     assert "testDebugUnitTest" in workflow
 
 
+def test_github_actions_runs_the_web_console_end_to_end_suite():
+    """The console is a shipped client; a browser regression must fail CI."""
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert "e2e/web-console" in workflow
+    assert "playwright install" in workflow
+    assert (ROOT / "e2e/web-console/playwright.config.ts").exists()
+    assert (ROOT / "e2e/web-console/tests/console.spec.ts").exists()
+
+
+def test_gradle_wrapper_is_executable():
+    """CI invokes ./gradlew directly; a non-executable mode fails the Android job."""
+    wrapper = ROOT / "android/gradlew"
+
+    assert wrapper.exists()
+    assert wrapper.stat().st_mode & 0o111, "android/gradlew must be committed with the executable bit"
+
+
 def test_github_actions_audits_python_dependencies():
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 

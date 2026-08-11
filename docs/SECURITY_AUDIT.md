@@ -41,6 +41,15 @@ through an in-process run-event notifier instead of a fixed DB polling loop.
 runner Python dependency locks are generated with `uv pip compile`; CI and Docker images
 install from the lockfiles, and CI audits those locked dependency sets with `pip-audit`.
 
+**Progress note (2026-08-11, web console pass):** A browser console now ships with the
+companion, and this pass reviewed both it and the pre-existing server surface. Four new
+findings were opened and fixed — H5 (spoofable client-IP headers bypassing every
+auth-adjacent rate limit), M10 (unbounded rate-limiter memory), M11 (unauthenticated
+`/health` amplifying into upstream Ollama requests), and L8 (retention swept only at
+startup). The console's own controls — HttpOnly refresh cookie, in-memory access token,
+CSRF double-submit, strict CSP with no inline script, exact-name static asset matching —
+are described under *Web console* below and pinned by tests.
+
 **Progress note (2026-07-03, fifth pass):** H4 now has an optional gVisor deployment path.
 `docker-compose.gvisor.yml` can run the runner with Docker runtime `runsc` when the host has
 gVisor installed. AppArmor or microVM isolation remain future production evaluations.
@@ -76,6 +85,12 @@ gaps would matter the moment the service is exposed through the Cloudflare tunne
 | L5 | Low | Server | Resolved: unexpected agent/tool exceptions use generic user-facing errors |
 | L6 | Low | Server | Resolved: long-lived SSE streams periodically revalidate the access token |
 | L7 | Low | Build | Resolved: Docker build contexts are scoped and server/runner `.dockerignore` files exist |
+| H5 | High | Server | Resolved: forwarded client-IP headers are only trusted from a declared proxy |
+| M10 | Medium | Server | Resolved: rate-limiter buckets are evicted and capped |
+| M11 | Medium | Server | Resolved: `/health` is cached and separately throttled |
+| M12 | Medium | Web | Resolved by design: browser refresh token is HttpOnly; access token is memory-only |
+| L8 | Low | Server | Resolved: retention sweeps periodically, not only at startup |
+| L9 | Low | Build | Resolved: `android/gradlew` is committed executable, so the CI Android job runs |
 
 ---
 
@@ -160,6 +175,31 @@ high-risk syscalls such as `ptrace`, `mount`, `unshare`, `keyctl`, `bpf`, and
 `perf_event_open`. `docker-compose.gvisor.yml` provides an opt-in `runtime: runsc` runner
 override for hosts with gVisor installed. AppArmor or a microVM remain stronger production
 boundary evaluations.
+
+### H5 — Spoofable client-IP headers bypassed every auth-adjacent rate limit
+`server/local_agents/rate_limit.py`
+
+```python
+def _client_key(request: Request) -> str:
+    cloudflare_ip = request.headers.get("cf-connecting-ip")
+    if cloudflare_ip:
+        return cloudflare_ip.strip()   # attacker-controlled
+```
+
+`CF-Connecting-IP` was trusted unconditionally. It is a plain request header: any caller
+can set it, and a caller that varies it per request gets a **fresh rate-limit bucket
+every time**. That defeats H2 entirely — the throttle on `/api/v1/admin/pairing`,
+`/api/v1/pair/exchange`, and `/api/v1/auth/refresh` becomes decorative, restoring
+unlimited online guessing against the operator-chosen admin token. The header is only
+meaningful when the request genuinely passed through Cloudflare; a directly exposed port
+or a tailnet address receives it straight from the client.
+
+**Fix:** forwarded headers (`CF-Connecting-IP`, `X-Forwarded-For`, `X-Real-IP`) are read
+only when the immediate peer falls inside `LOCAL_AGENTS_TRUSTED_PROXY_NETWORKS`, which
+defaults to empty — trust nobody. Otherwise the socket peer keys the bucket. Operators
+behind a tunnel set the variable to that proxy's network. Pinned by
+`test_forwarded_client_headers_are_ignored_without_a_trusted_proxy` and
+`server/tests/test_rate_limit.py`.
 
 ---
 
@@ -252,6 +292,42 @@ returns an opaque `500` instead of a structured tool error.
 **Fix:** resolved by wrapping process spawn and returning `HTTPException(400)` with an
 `executable not found` message.
 
+### M10 — Rate-limiter memory grew once per client address, forever — resolved
+`server/local_agents/rate_limit.py`
+
+`_hits` was keyed by `(path, client)` and never pruned; an empty deque stayed in the map
+after its window elapsed. Combined with H5 that was directly attacker-driven (a new key
+per spoofed header value); even without it, a large client pool grows the map without
+bound.
+
+**Fix:** resolved. Buckets whose window has fully elapsed are dropped on each check, and
+the map is capped at `max_tracked_keys` with least-recently-used eviction.
+
+### M11 — Unauthenticated `/health` amplified into upstream requests — resolved
+`server/local_agents/app.py`
+
+`/health` is unauthenticated by design so the pairing screens can preview host state. It
+called Ollama on every request with a 2.5 s timeout and no cache, so an anonymous caller
+turned one cheap HTTP request into one upstream request against the operator's model
+server, and could hold connections open.
+
+**Fix:** resolved. The payload is cached for `LOCAL_AGENTS_HEALTH_CACHE_SECONDS` (default
+5 s) and the route has its own rate-limit budget, separate from the auth bucket so
+health polling cannot exhaust pairing attempts. Pinned by `server/tests/test_health.py`.
+
+### M12 — Browser credential storage — resolved by design
+`server/local_agents/app.py`, `server/local_agents/web/api.js`
+
+A browser has no Android Keystore. Putting a 30-day refresh token in `localStorage`
+would make any injected script a permanent account takeover.
+
+**Fix:** the refresh token is delivered only as an `HttpOnly`, `SameSite=Strict` cookie
+scoped to `/api/v1/web` and never appears in a response body; the access token is
+returned in the body and held in memory only, so a reload discards it. The two
+cookie-authenticated routes additionally require the CSRF value echoed in a header. Every
+other route remains bearer-only, so the cookie is never attached to an API call. Pinned
+by `server/tests/test_web_console.py` and the browser suite in `e2e/web-console`.
+
 ### M9 — SSE has no per-device cap and polls every 0.3 s — resolved
 `server/local_agents/app.py:198` — each `/runs/{id}/events` connection holds an open
 streaming response and re-queries the DB every 300 ms. Many reconnecting clients multiply
@@ -284,10 +360,52 @@ events wake the stream without a fixed 300 ms DB polling loop.
   specific messages.
 - **L6** — Resolved: SSE streams revalidate the access token periodically and end if the
   token expires or the device is revoked.
+- **L8** — Resolved: retention swept only once, at startup. A companion that stays up
+  for weeks — the normal case for a desktop service — never swept again, so expired
+  tokens, used pairing codes, and old run events accumulated indefinitely. A background
+  task now repeats the sweep every `LOCAL_AGENTS_RETENTION_SWEEP_HOURS`.
+- **L9** — Resolved: `android/gradlew` was committed with mode `100644`. The CI Android
+  job invokes `./gradlew` directly, so it failed with "Permission denied" and the Android
+  unit tests were not actually running. The file is now committed executable and
+  `test_gradle_wrapper_is_executable` fails if that regresses.
 - **L7** — Resolved for the active Docker contexts: Compose builds `./server` and `./runner`,
   and both contexts include `.dockerignore`.
 
 ---
+
+## Web console
+
+The browser console at `/app` is a second client for the same API, with the same device
+ownership model. Its security-relevant properties:
+
+- **Credential split** — see M12. Refresh token: HttpOnly cookie, `/api/v1/web` scope.
+  Access token: memory only. CSRF: double-submit cookie plus `SameSite=Strict`.
+- **Cookie `Secure`** — derived from the scheme the browser actually used, not from
+  `public_url`, so the flag is correct on both the HTTPS tunnel and a plain-HTTP tailnet
+  address instead of silently breaking the second. Forceable either way with
+  `LOCAL_AGENTS_WEB_SESSION_COOKIE_SECURE`.
+- **CSP** — pages are served with `script-src 'self'` and no `unsafe-inline`; the bundle
+  contains no inline `<script>` and no `on*=` handlers, and a test fails if one appears.
+  API responses declare `default-src 'none'`. The previous global policy allowed
+  `script-src 'unsafe-inline'`, which made the CSP largely ornamental.
+- **Service worker CSP** — `/sw.js` is served with `connect-src 'self'` because a worker
+  runs under the CSP of its own script response. Under the load-nothing API policy every
+  `fetch` inside the worker is blocked and navigation in the installed app fails
+  outright; this was found by the browser suite, not by review.
+- **XSS** — no server value is ever written as markup. The DOM helper throws if given an
+  `html` key, agent output goes through `textContent`, and agent-supplied links carry
+  `rel="noopener noreferrer nofollow"`. A browser test asserts that an `<img onerror=>`
+  payload in a prompt does not execute.
+- **Static assets** — matched against an exact-name map built at import time, so a
+  request string never reaches the filesystem and traversal is structurally impossible.
+- **Offline cache** — the service worker caches only the console's own files; `/api`
+  traffic is always network-only, so no conversation content lands in a cache.
+- **Kill switch** — `LOCAL_AGENTS_WEB_CONSOLE_ENABLED=0` removes the console and its web
+  auth routes while leaving the API and `/admin` intact.
+
+Residual: the console is only as safe as the transport. Behind a plain-HTTP tunnel the
+session cookie is not `Secure` and is exposed to a network attacker. Terminate TLS
+(Cloudflare Tunnel or Tailscale HTTPS) before any non-local exposure.
 
 ## Verified controls (regression-tested)
 
@@ -317,15 +435,36 @@ so regressions surface immediately:
   (`test_infra_config`, `test_dependencies`)
 - CI and Docker install Python packages from deterministic lockfiles.
   (`test_dependencies`)
+- Forwarded client-IP headers are ignored unless the peer is a declared trusted proxy;
+  rate-limit buckets are evicted and capped. (`test_rate_limit`, `test_auth_lifecycle`)
+- `/health` is cached and throttled on its own budget. (`test_health`)
+- The browser refresh token never appears in a response body, its cookie is HttpOnly and
+  path-scoped, refresh rotates and rejects replay, and logout revokes.
+  (`test_web_console`)
+- Cookie-authenticated web routes reject a missing or mismatched CSRF header.
+  (`test_web_console`)
+- Served pages carry a CSP with no inline-script escape hatch, the bundle contains no
+  inline handlers, and the static route cannot escape the bundle. (`test_web_console`)
+- Session delete cascades to messages, runs, and events, cancels active runs first, and
+  is scoped to the owning device. (`test_sessions_api`)
+- A conversation is auto-titled from its first prompt only, and never overwrites an
+  operator-chosen title. (`test_sessions_api`)
+- The full console — pairing, streaming, run lifecycle, XSS handling, cookie
+  inaccessibility — runs in a real browser in desktop and mobile viewports.
+  (`e2e/web-console`)
 
 ---
 
 ## Suggested remediation order
 
-1. **H1 + H2** — gate the default admin token and add rate limiting (smallest change, biggest
-   exposure reduction before any tunnel goes live).
-2. **M1 + M2** — disable public docs, add security headers.
-3. **H3 remaining** — verified Android App Links + production tunnel domain allowlist.
-4. **H4 remaining** — evaluate gVisor/AppArmor or a microVM for the runner trust boundary.
+1. **H3 remaining** — verified Android App Links + production tunnel domain allowlist.
+2. **H4 remaining** — evaluate gVisor/AppArmor or a microVM for the runner trust boundary.
+3. **Set `LOCAL_AGENTS_TRUSTED_PROXY_NETWORKS`** when deploying behind Cloudflare or any
+   reverse proxy. Leaving it empty is safe but makes every request through the proxy share
+   one rate-limit bucket, which throttles legitimate clients as a group.
+4. **Consider Cloudflare Access** in front of `/admin` and `/app` for public exposure. Both
+   are single-secret or single-code entry points to full agent control of the PC.
 5. **Release hardening remaining** — verified App Links, stronger runner isolation, and
    production perimeter decisions.
+
+Items 1–2 of the previous list (H1/H2 gating, M1/M2 docs and headers) are complete.

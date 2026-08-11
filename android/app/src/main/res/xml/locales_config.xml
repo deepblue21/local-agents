@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Declares the languages the app ships, so Android 13+ can offer a per-app language
+  picker in system settings. Turkish is the source language in values/; English lives
+  in values-en/.
+-->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="tr" />
+    <locale android:name="en" />
+</locale-config>

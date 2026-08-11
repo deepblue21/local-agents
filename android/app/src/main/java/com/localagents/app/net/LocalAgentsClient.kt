@@ -121,6 +121,35 @@ class LocalAgentsClient {
         executeJson(baseUrl, "/api/v1/sessions", "POST", token, JSONObject().put("title", title)).toSession()
     }
 
+    suspend fun renameSession(
+        baseUrl: String,
+        token: String,
+        sessionId: String,
+        title: String,
+    ): AgentSession = withContext(Dispatchers.IO) {
+        executeJson(
+            baseUrl,
+            "/api/v1/sessions/$sessionId",
+            "PATCH",
+            token,
+            JSONObject().put("title", title),
+        ).toSession()
+    }
+
+    /** Deletes the conversation and every message, run, and event that belongs to it. */
+    suspend fun deleteSession(baseUrl: String, token: String, sessionId: String) {
+        withContext(Dispatchers.IO) {
+            val request = Request.Builder()
+                .url(endpointUrlOrThrow(baseUrl, "/api/v1/sessions/$sessionId"))
+                .header("Authorization", "Bearer $token")
+                .delete()
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw apiError(response.code, response.body?.string().orEmpty())
+            }
+        }
+    }
+
     suspend fun listMessages(baseUrl: String, token: String, sessionId: String): List<ChatMessage> = withContext(Dispatchers.IO) {
         val array = executeArray(baseUrl, "/api/v1/sessions/$sessionId/messages", token)
         List(array.length()) { index -> array.getJSONObject(index).toMessage() }
@@ -262,6 +291,7 @@ class LocalAgentsClient {
         val requestBody = body.toString().toRequestBody(jsonType)
         when (method) {
             "POST" -> builder.post(requestBody)
+            "PATCH" -> builder.patch(requestBody)
             else -> error("unsupported method")
         }
         client.newCall(builder.build()).execute().use { response ->

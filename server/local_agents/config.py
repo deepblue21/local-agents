@@ -4,7 +4,7 @@ import ipaddress
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -53,6 +53,19 @@ class Settings(BaseSettings):
     trusted_proxy_networks: str = ""
     health_cache_seconds: float = 5.0
     retention_sweep_hours: float = 12.0
+
+    @field_validator("web_session_cookie_secure", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, value):
+        """Treat a blank value as "not configured".
+
+        `.env` files are hand-edited, and writing `LOCAL_AGENTS_X=` to mean "leave the
+        default" is the natural thing to do. Without this, an empty optional boolean
+        fails validation and the companion refuses to start.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def normalized_public_url(self) -> str:

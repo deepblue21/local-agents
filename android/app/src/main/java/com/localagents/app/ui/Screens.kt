@@ -47,6 +47,8 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.History
@@ -58,6 +60,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.WifiOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -457,6 +460,8 @@ private fun hostProbeLabel(probe: HostProbe): String = when {
 
 @Composable
 internal fun SessionsScreen(vm: LocalAgentsViewModel) {
+    var renameTarget by remember { mutableStateOf<AgentSession?>(null) }
+    var deleteTarget by remember { mutableStateOf<AgentSession?>(null) }
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(vertical = 14.dp),
@@ -498,21 +503,123 @@ internal fun SessionsScreen(vm: LocalAgentsViewModel) {
         }
         items(vm.sessions, key = { it.id }) { session ->
             val latestRun = vm.runs.firstOrNull { it.sessionId == session.id }
-            SessionRow(session, latestRun, onClick = { vm.openSession(session) })
+            SessionRow(
+                session = session,
+                run = latestRun,
+                onClick = { vm.openSession(session) },
+                onRename = { renameTarget = session },
+                onDelete = { deleteTarget = session },
+            )
         }
+    }
+
+    renameTarget?.let { target ->
+        SessionRenameDialog(
+            session = target,
+            onDismiss = { renameTarget = null },
+            onConfirm = { title ->
+                vm.renameSession(target, title)
+                renameTarget = null
+            },
+        )
+    }
+
+    deleteTarget?.let { target ->
+        SessionDeleteDialog(
+            session = target,
+            onDismiss = { deleteTarget = null },
+            onConfirm = {
+                vm.deleteSession(target)
+                deleteTarget = null
+            },
+        )
     }
 }
 
 @Composable
-private fun SessionRow(session: AgentSession, run: AgentRun?, onClick: () -> Unit) {
+private fun SessionRenameDialog(
+    session: AgentSession,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var title by remember(session.id) { mutableStateOf(session.title) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.session_rename_title)) },
+        text = {
+            OutlinedTextField(
+                value = title,
+                onValueChange = { if (it.length <= LocalAgentsViewModel.MAX_SESSION_TITLE) title = it },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(title) }, enabled = title.isNotBlank()) {
+                Text(stringResource(R.string.action_save))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+        },
+        containerColor = Surface,
+    )
+}
+
+@Composable
+private fun SessionDeleteDialog(
+    session: AgentSession,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.session_delete_title)) },
+        text = { Text(stringResource(R.string.session_delete_body, session.title), color = TextSecondary) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(stringResource(R.string.action_delete), color = Coral)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+        },
+        containerColor = Surface,
+    )
+}
+
+@Composable
+private fun SessionRow(
+    session: AgentSession,
+    run: AgentRun?,
+    onClick: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val toolSummary = if (session.toolCount > 0) stringResource(R.string.tool_count, session.toolCount) else null
     Column(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 13.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 16.dp, end = 6.dp, top = 13.dp, bottom = 13.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(session.title, fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             run?.let { StatusChip(it.status) }
+            IconButton(onClick = onRename, modifier = Modifier.size(34.dp)) {
+                Icon(
+                    Icons.Filled.Edit,
+                    stringResource(R.string.session_rename_title),
+                    tint = Muted,
+                    modifier = Modifier.size(17.dp),
+                )
+            }
+            IconButton(onClick = onDelete, modifier = Modifier.size(34.dp)) {
+                Icon(
+                    Icons.Filled.DeleteOutline,
+                    stringResource(R.string.session_delete_title),
+                    tint = Muted,
+                    modifier = Modifier.size(17.dp),
+                )
+            }
         }
         Text(
             listOfNotNull(relativeTime(session.updatedAt), run?.model, run?.provider, toolSummary).joinToString(" · "),

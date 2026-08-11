@@ -60,6 +60,11 @@ docker compose up -d api runner
 Open `http://127.0.0.1:8787/admin`, enter the admin token, and create a pairing QR.
 The phone camera opens the `localagents://pair` deep link in the Android application.
 
+The same companion serves a browser console at `http://127.0.0.1:8787/app`. Paste a
+pairing code there to control the agent from a desktop or a phone browser with the same
+feature set as the app. See `docs/WEB_CONSOLE.md`; set
+`LOCAL_AGENTS_WEB_CONSOLE_ENABLED=0` to serve the API and `/admin` only.
+
 ### Optional gVisor runner
 
 If the host has gVisor installed as Docker runtime `runsc`, start the runner with the
@@ -75,6 +80,11 @@ If Docker reports that runtime `runsc` is unknown, install/configure gVisor firs
 default compose file.
 
 ## 4. Cloudflare Tunnel
+
+Set `LOCAL_AGENTS_TRUSTED_PROXY_NETWORKS` to the Docker network the tunnel connects
+from (for example `172.16.0.0/12`) before going public. Client-IP headers are ignored
+unless the peer is inside that range, so without it every tunnelled request shares one
+rate-limit bucket; with a wrong value set too broadly, a client could spoof its address.
 
 Create a remotely managed tunnel and route the chosen public hostname to
 `http://api:8787`. Then start the public profile:

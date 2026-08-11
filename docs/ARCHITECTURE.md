@@ -2,6 +2,11 @@
 
 ## Components
 
+There are two clients: the Android controller and the browser console the companion
+serves at `/app`. Both speak the same API, carry the same device-ownership model, and
+see the same runs; they differ only in how a credential is stored and how the UI is
+drawn. Anything added to one belongs in the other.
+
 The Android application talks only to the companion API. The companion owns device
 authentication, persisted sessions, run orchestration, model adapters, and event
 streaming. Ollama and Nova credentials never leave the PC.
@@ -27,12 +32,20 @@ link-local, and other non-public network targets by default to reduce SSRF risk.
 - `GET /api/v1/models`: list models and provider capabilities.
 - `GET|POST /api/v1/sessions`: list or create conversations. Listed sessions include
   `tool_count`, the persisted count of tool-start events across that conversation.
+- `PATCH /api/v1/sessions/{id}`: rename a conversation.
+- `DELETE /api/v1/sessions/{id}`: delete a conversation and everything under it.
+  Active runs are cancelled first, then messages, memory, runs, and run events are
+  removed through `ON DELETE CASCADE`.
 - `GET /api/v1/sessions/{id}/context`: estimate context-window usage for the session.
 - `POST /api/v1/sessions/{id}/context/compress`: summarize older session history into
   server-side memory so later runs can continue with a smaller prompt.
 - `POST /api/v1/sessions/{id}/runs`: add a prompt and queue an agent run.
 - `GET /api/v1/runs/{id}/events`: SSE replay followed by live events.
 - `POST /api/v1/runs/{id}/commands`: pause, resume, cancel, or steer a run.
+- `GET /api/v1/runs?session_id=`: optionally scope the run list to one conversation.
+
+A conversation created with a placeholder title is renamed after its first prompt, so
+session lists read as work rather than as a column of identical defaults.
 
 Each event has a monotonically increasing sequence. Android reconnects with
 `Last-Event-ID`; the server replays newer rows before tailing live events.
@@ -105,13 +118,71 @@ pairing code.
 Cloudflare Tunnel provides the public TLS transport through outbound-only connections.
 The companion still authenticates every non-health API request independently.
 
+### Client address trust
+
+Auth-adjacent endpoints are rate-limited per client address. `CF-Connecting-IP`,
+`X-Forwarded-For`, and `X-Real-IP` are only read when the immediate peer is inside
+`LOCAL_AGENTS_TRUSTED_PROXY_NETWORKS`; otherwise the socket peer is used. The default
+is to trust nobody, which is correct for a directly exposed port: any caller can set
+those headers, and honouring them unconditionally lets one client rotate the value and
+mint an unlimited number of rate-limit buckets. Set the variable to the tunnel or
+reverse-proxy network — for example `LOCAL_AGENTS_TRUSTED_PROXY_NETWORKS=172.16.0.0/12`
+— when the companion sits behind one, so per-client limits track real clients again.
+
+`/health` is unauthenticated by design. It is cached for
+`LOCAL_AGENTS_HEALTH_CACHE_SECONDS` and throttled on its own budget, so anonymous
+polling cannot be amplified into one Ollama request per call.
+
 Android denies cleartext by default through `network_security_config.xml`. Cleartext
 is scoped to emulator/loopback and this PC's Tailscale tailnet host for development
 and remote testing; production/public endpoints should use HTTPS.
 
+## Web console
+
+The companion serves a browser console at `/app` from `server/local_agents/web/`, with
+the same feature set as Android: pairing, session list with rename and delete, chat with
+live streaming, tool and source timelines, run controls (pause/resume/steer/cancel),
+context usage and compression, model selection, themes, and Turkish/English strings. It
+installs as a PWA through `manifest.webmanifest` and an offline app shell in `sw.js`,
+and posts a browser notification when a run finishes while the tab is in the background.
+
+Assets are enumerated into an exact-name map at import time and matched by name, so no
+request string ever reaches the filesystem. Pages are served with a CSP that has no
+inline-script escape hatch (`script-src 'self'`, no `unsafe-inline`), API responses
+declare `default-src 'none'`, and the service worker gets its own policy — a worker runs
+under the CSP of its own script response, so the load-nothing API policy would leave
+`connect-src` at `'none'` and break every fetch inside it.
+
+Set `LOCAL_AGENTS_WEB_CONSOLE_ENABLED=0` to serve the API and `/admin` only.
+
+### Browser credentials
+
+Android encrypts its refresh token with an Android Keystore key. A browser has no
+equivalent, and `localStorage` is readable by any script that gets injected, so the
+console uses a different split:
+
+- `POST /api/v1/web/session` exchanges a pairing code and sets the refresh token in an
+  `HttpOnly`, `SameSite=Strict` cookie scoped to `/api/v1/web`. It never appears in a
+  response body and page script cannot read it.
+- The access token is returned in the body and kept in memory only. A reload discards
+  it and silently re-derives one from the cookie, so no long-lived credential is
+  persisted anywhere script can reach.
+- `POST /api/v1/web/refresh` rotates the refresh token; `POST /api/v1/web/logout`
+  revokes it. Both require the `la_csrf` cookie echoed in an `X-CSRF-Token` header,
+  which only same-origin script can do.
+- Every other route stays bearer-authenticated exactly as it is for Android, so the
+  cookie is never sent on an API call and cannot be used for cross-site requests.
+
+`Secure` is derived from the scheme the browser actually used, not from `public_url`: a
+companion is commonly reached over HTTPS through the tunnel *and* over plain HTTP on a
+tailnet address, and pinning `Secure` on would silently break the second path.
+`LOCAL_AGENTS_WEB_SESSION_COOKIE_SECURE` forces the flag either way.
+
 ## Retention
 
-The companion runs a startup retention sweep after SQLite initialization. It removes
+The companion runs a startup retention sweep after SQLite initialization, then repeats
+it every `LOCAL_AGENTS_RETENTION_SWEEP_HOURS` for as long as the process lives — a
+startup-only sweep never runs again on a companion that stays up for weeks. It removes
 used or expired pairing codes, expired auth tokens, old revoked tokens, and run events
 older than `LOCAL_AGENTS_RETENTION_RUN_EVENT_DAYS` for terminal runs. Active-run events
 are preserved so phone disconnects still remain replayable. Revoked-token cleanup uses
