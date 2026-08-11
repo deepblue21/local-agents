@@ -18,6 +18,9 @@ android/app/build/
 android/build/
 
 server/data/
+server/.e2e/
+e2e/*/test-results/
+e2e/*/playwright-report/
 *.db
 *.sqlite
 

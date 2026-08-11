@@ -316,6 +316,61 @@ class Database:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def set_session_title(
+        self,
+        session_id: str,
+        title: str,
+        owner_device_id: str | None = None,
+    ) -> dict | None:
+        if not self.get_session(session_id, owner_device_id):
+            return None
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE sessions SET title=?, updated_at=? WHERE id=?",
+                (title, now_iso(), session_id),
+            )
+        return self.get_session(session_id, owner_device_id)
+
+    def delete_session(self, session_id: str, owner_device_id: str | None = None) -> bool:
+        """Delete a conversation and every row that hangs off it.
+
+        Messages, memory summaries, runs, and run events are removed by the schema's
+        ``ON DELETE CASCADE`` foreign keys, which is why ``PRAGMA foreign_keys=ON``
+        matters on every connection.
+        """
+        if not self.get_session(session_id, owner_device_id):
+            return False
+        with self._write_lock, self.connect() as conn:
+            cursor = conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+            return cursor.rowcount > 0
+
+    def session_run_ids(self, session_id: str, statuses: tuple[str, ...] | None = None) -> list[str]:
+        query = "SELECT id FROM runs WHERE session_id=?"
+        params: tuple = (session_id,)
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            query += f" AND status IN ({placeholders})"
+            params += tuple(statuses)
+        with self.connect() as conn:
+            return [row["id"] for row in conn.execute(query, params).fetchall()]
+
+    def revoke_token(self, raw_token: str, kind: str = "refresh") -> bool:
+        with self._write_lock, self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE auth_tokens SET revoked_at=?
+                   WHERE token_hash=? AND kind=? AND revoked_at IS NULL""",
+                (now_iso(), self.digest(raw_token), kind),
+            )
+            return cursor.rowcount > 0
+
+    def revoke_device_tokens(self, device_id: str) -> int:
+        with self._write_lock, self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE auth_tokens SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL",
+                (now_iso(), device_id),
+            )
+            return max(cursor.rowcount, 0)
+
     def add_message(self, session_id: str, role: str, content: str) -> dict:
         message_id = str(uuid.uuid4())
         timestamp = now_iso()

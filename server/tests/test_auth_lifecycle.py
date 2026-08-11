@@ -30,7 +30,12 @@ def make_settings(tmp_path, **overrides) -> Settings:
 
 
 def make_client(tmp_path, **overrides) -> TestClient:
-    return TestClient(create_app(make_settings(tmp_path, **overrides)))
+    # A concrete peer address is required: trusted-proxy checks parse it as an IP,
+    # and TestClient's default "testclient" host is not one.
+    return TestClient(
+        create_app(make_settings(tmp_path, **overrides)),
+        client=("127.0.0.1", 51000),
+    )
 
 
 def issue_pairing(client: TestClient, admin: str = ADMIN):
@@ -61,7 +66,12 @@ def test_insecure_admin_token_refuses_start_without_dev_override(tmp_path, token
 
 
 def test_auth_rate_limit_is_keyed_by_path_and_client(tmp_path):
-    with make_client(tmp_path, auth_rate_limit_per_minute=1) as client:
+    """With a trusted proxy declared, the forwarded client address keys the bucket."""
+    with make_client(
+        tmp_path,
+        auth_rate_limit_per_minute=1,
+        trusted_proxy_networks="127.0.0.0/8",
+    ) as client:
         body = {"code": "x" * 30, "device_name": "Phone"}
         headers = {"CF-Connecting-IP": "203.0.113.10"}
 
@@ -78,6 +88,33 @@ def test_auth_rate_limit_is_keyed_by_path_and_client(tmp_path):
             headers={"CF-Connecting-IP": "203.0.113.11"},
         )
         assert other_client.status_code == 401
+
+
+def test_forwarded_client_headers_are_ignored_without_a_trusted_proxy(tmp_path):
+    """A spoofed client-IP header must not reset the rate-limit bucket.
+
+    Any caller can send ``CF-Connecting-IP``. If it were trusted unconditionally, an
+    attacker on a directly exposed port would rotate the value and get unlimited
+    attempts against the pairing and refresh endpoints.
+    """
+    with make_client(tmp_path, auth_rate_limit_per_minute=1) as client:
+        body = {"code": "x" * 30, "device_name": "Phone"}
+
+        first = client.post(
+            "/api/v1/pair/exchange", json=body, headers={"CF-Connecting-IP": "203.0.113.10"}
+        )
+        assert first.status_code == 401
+
+        for spoofed in ("203.0.113.11", "203.0.113.12", "198.51.100.7"):
+            response = client.post(
+                "/api/v1/pair/exchange", json=body, headers={"CF-Connecting-IP": spoofed}
+            )
+            assert response.status_code == 429
+
+        forwarded_for = client.post(
+            "/api/v1/pair/exchange", json=body, headers={"X-Forwarded-For": "198.51.100.9"}
+        )
+        assert forwarded_for.status_code == 429
 
 
 def test_docs_are_disabled_and_security_headers_are_set(tmp_path):

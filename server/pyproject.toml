@@ -18,6 +18,9 @@ dependencies = [
 where = ["."]
 include = ["local_agents*"]
 
+[tool.setuptools.package-data]
+local_agents = ["web/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests", "../runner/tests"]
 asyncio_mode = "auto"
