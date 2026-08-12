@@ -60,16 +60,33 @@ function sessionRow(page: Page, title: string) {
   return page.locator('.rail-row:visible').filter({ hasText: title }).first();
 }
 
-/** Start a conversation and wait for the agent's streamed reply to settle. */
-async function runPrompt(page: Page, prompt: string) {
-  await page.getByRole('button', { name: 'New chat' }).first().click();
+/**
+ * Send a prompt and wait for the run to finish.
+ *
+ * Waiting on the reply text alone is not enough once a conversation already has one:
+ * the previous run's bubble still matches, so the helper returns while the new run is
+ * still streaming. The composer is disabled for the duration of a run, so waiting for
+ * it to come back is the signal that the run actually reached a terminal state.
+ */
+async function sendPrompt(page: Page, prompt: string) {
   const composer = page.getByRole('textbox', { name: 'Describe the task…' });
   await expect(composer).toBeEnabled();
+  const replies = await page.locator('.msg.agent .bubble').count();
+
   await composer.fill(prompt);
   await page.getByRole('button', { name: 'Send' }).click();
-  await expect(page.locator('.msg.user .bubble').last()).toHaveText(prompt);
+
+  await expect(page.locator('.msg.agent .bubble')).toHaveCount(replies + 1, { timeout: 30_000 });
   await expect(page.locator('.msg.agent .bubble').last())
     .toContainText('test yanıtıdır', { timeout: 30_000 });
+  await expect(composer).toBeEnabled({ timeout: 30_000 });
+}
+
+/** Start a fresh conversation and run one prompt in it. */
+async function runPrompt(page: Page, prompt: string) {
+  await page.getByRole('button', { name: 'New chat' }).first().click();
+  await sendPrompt(page, prompt);
+  await expect(page.locator('.msg.user .bubble').last()).toHaveText(prompt);
 }
 
 test('pairing screen previews companion health before a code is entered', async ({ page }) => {
@@ -259,22 +276,18 @@ test('the console renders without tripping its own CSP', async ({ page, request 
 });
 
 test('auto-follow resumes after the operator scrolls back down', async ({ page, request }) => {
-  const send = async (prompt: string) => {
-    const composer = page.getByRole('textbox', { name: 'Describe the task…' });
-    await expect(composer).toBeEnabled();
-    await composer.fill(prompt);
-    await page.getByRole('button', { name: 'Send' }).click();
-    await expect(page.locator('.msg.agent .bubble').last())
-      .toContainText('test yanıtıdır', { timeout: 30_000 });
-  };
+  const send = (prompt: string) => sendPrompt(page, prompt);
   const scroll = page.locator('.chat-scroll');
 
   await pair(page, request);
-  // The conversation has to actually overflow, or "scrolled to the bottom" is
-  // trivially true and the assertion below proves nothing.
   await runPrompt(page, `e2e scroll task\n${'filler line\n'.repeat(80)}`);
-  const overflows = await scroll.evaluate((node) => node.scrollHeight > node.clientHeight + 200);
-  expect(overflows).toBe(true);
+
+  // The conversation has to actually overflow, or "scrolled to the bottom" is
+  // trivially true and the assertions below prove nothing. Polled rather than
+  // sampled: on a slow machine the transcript is still settling here.
+  await expect
+    .poll(() => scroll.evaluate((node) => node.scrollHeight - node.clientHeight), { timeout: 15_000 })
+    .toBeGreaterThan(200);
 
   // Scroll up, then let a run re-render the chat while scrolled away. That render
   // replaces the scroll container, and the listener that notices a scroll back down
@@ -284,7 +297,10 @@ test('auto-follow resumes after the operator scrolls back down', async ({ page, 
   await send(`e2e scroll while unpinned\n${'filler line\n'.repeat(80)}`);
 
   await scroll.evaluate((node) => { node.scrollTop = node.scrollHeight; });
-  await page.waitForTimeout(150);
+  // Let the scroll event that re-arms auto-follow be delivered.
+  await expect
+    .poll(() => scroll.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight))
+    .toBeLessThan(80);
 
   await send(`e2e scroll should follow again\n${'filler line\n'.repeat(80)}`);
   // Polled rather than sampled once: the scroll happens in a requestAnimationFrame

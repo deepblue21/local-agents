@@ -1135,9 +1135,6 @@ function renderView() {
   switch (state.view) {
     case 'chat':
       view.append(chatView());
-      // Only meaningful once the node is attached, which is why it is not done
-      // inside chatView().
-      scrollChatToBottom();
       break;
     case 'runs': view.append(runsView()); break;
     case 'models': view.append(modelsView()); break;
@@ -1640,6 +1637,9 @@ function scheduleRender() {
     renderBanner();
     renderView();
     renderComposer();
+    // Last: the node must be attached, and the composer above it must have settled
+    // on its final height, or the transcript is scrolled against a stale viewport.
+    scrollChatToBottom();
   });
 }
 
@@ -1658,6 +1658,7 @@ function mount() {
   renderBanner();
   renderView();
   renderComposer();
+  scrollChatToBottom();
 }
 
 // ---------------------------------------------------------------- boot
