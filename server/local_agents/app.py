@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import io
 import json
+import logging
 import secrets
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
@@ -12,14 +14,16 @@ from typing import Annotated
 from urllib.parse import urlencode
 
 import qrcode
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
+from . import webapp
 from .adapters import NovaAdapter, OllamaAdapter
 from .agent import AgentManager
 from .config import Settings, get_settings
 from .database import Database
 from .models import (
+    CommandType,
     ContextCompress,
     EventOut,
     DeviceOut,
@@ -33,14 +37,32 @@ from .models import (
     SessionCreate,
     SessionContextOut,
     SessionOut,
+    SessionUpdate,
     TokenBundle,
     TokenRefresh,
+    WebSessionOut,
+    WebSessionStart,
 )
 from .pairing import random_pairing_code
-from .rate_limit import InMemoryRateLimiter
+from .rate_limit import InMemoryRateLimiter, peer_is_trusted_proxy
 from .runner_client import RunnerClient
 from .security import issue_tokens
 from .web_tools import WebToolClient
+
+logger = logging.getLogger(__name__)
+
+REFRESH_COOKIE = "la_refresh"
+CSRF_COOKIE = "la_csrf"
+CSRF_HEADER = "x-csrf-token"
+# Scoping the refresh cookie to the only routes that consume it keeps it off every
+# other request, including the SSE stream and all bearer-authenticated API calls.
+WEB_AUTH_PATH = "/api/v1/web"
+
+# Titles the clients create a conversation with before the operator has typed
+# anything. Seeing one of these means the conversation is still unnamed, so the
+# first prompt may name it.
+PLACEHOLDER_SESSION_TITLES = {"yeni sohbet", "new chat", "new session", "yeni oturum"}
+ACTIVE_RUN_STATUSES = (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.PAUSED)
 
 
 @dataclass(frozen=True)
@@ -97,6 +119,50 @@ class RunEventNotifier:
         return True
 
 
+class HealthCache:
+    """Short-lived cache for the unauthenticated ``/health`` payload.
+
+    ``/health`` reaches out to Ollama, so serving it uncached lets an unauthenticated
+    caller turn one cheap request into one upstream request. The window is small
+    enough that pairing previews still look live.
+    """
+
+    def __init__(self, ttl_seconds: float):
+        self.ttl_seconds = max(0.0, ttl_seconds)
+        self._value: dict | None = None
+        self._stored_at = 0.0
+        self._lock = asyncio.Lock()
+
+    async def get(self, producer) -> dict:
+        if self.ttl_seconds <= 0:
+            return await producer()
+        async with self._lock:
+            now = monotonic()
+            if self._value is not None and now - self._stored_at < self.ttl_seconds:
+                return self._value
+            value = await producer()
+            self._value = value
+            self._stored_at = now
+            return value
+
+    def invalidate(self) -> None:
+        self._value = None
+
+
+def derive_session_title(prompt: str, limit: int = 60) -> str:
+    """Build a readable conversation title from the first prompt."""
+    collapsed = " ".join(prompt.split())
+    if not collapsed:
+        return "Yeni sohbet"
+    if len(collapsed) <= limit:
+        return collapsed
+    cut = collapsed[:limit].rstrip()
+    boundary = cut.rfind(" ")
+    if boundary >= limit // 2:
+        cut = cut[:boundary].rstrip()
+    return f"{cut}…"
+
+
 def _qr_data_url(value: str) -> str:
     image = qrcode.make(value)
     output = io.BytesIO()
@@ -128,15 +194,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         on_event=run_event_notifier.notify,
     )
 
-    @asynccontextmanager
-    async def lifespan(_: FastAPI):
-        db.initialize()
-        db.cleanup_retention(
+    def run_retention_sweep() -> dict[str, int]:
+        return db.cleanup_retention(
             revoked_token_grace_days=cfg.retention_revoked_token_grace_days,
             run_event_retention_days=cfg.retention_run_event_days,
         )
+
+    async def retention_loop() -> None:
+        """Keep sweeping while the process lives.
+
+        A startup-only sweep never runs again on a companion that stays up for
+        weeks, which is the normal case for a desktop service.
+        """
+        interval = max(600.0, cfg.retention_sweep_hours * 3600.0)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await asyncio.to_thread(run_retention_sweep)
+            except Exception:
+                logger.exception("Retention sweep failed")
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        db.initialize()
+        run_retention_sweep()
         await manager.start()
+        retention_task = asyncio.create_task(retention_loop(), name="local-agents-retention")
         yield
+        retention_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await retention_task
         await manager.stop()
 
     app = FastAPI(
@@ -151,9 +238,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.db = db
     app.state.manager = manager
     app.state.run_event_notifier = run_event_notifier
-    auth_rate_limiter = InMemoryRateLimiter(cfg.auth_rate_limit_per_minute)
+    trusted_proxies = cfg.trusted_proxies
+    auth_rate_limiter = InMemoryRateLimiter(
+        cfg.auth_rate_limit_per_minute,
+        trusted_proxies=trusted_proxies,
+    )
+    # `/health` is unauthenticated by design, so it gets its own, looser budget
+    # instead of sharing the auth bucket.
+    health_rate_limiter = InMemoryRateLimiter(
+        max(cfg.auth_rate_limit_per_minute * 5, 60),
+        trusted_proxies=trusted_proxies,
+    )
+    health_cache = HealthCache(cfg.health_cache_seconds)
     event_stream_limiter = EventStreamLimiter(cfg.sse_streams_per_device)
     app.state.event_stream_limiter = event_stream_limiter
+    app.state.health_cache = health_cache
+    console_enabled = cfg.web_console_enabled and webapp.available()
+    app.state.web_console_enabled = console_enabled
 
     @app.middleware("http")
     async def add_security_headers(request: Request, call_next):
@@ -161,18 +262,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
-        response.headers.setdefault(
-            "Content-Security-Policy",
-            "default-src 'none'; "
-            "img-src 'self' data:; "
-            "style-src 'unsafe-inline'; "
-            "script-src 'unsafe-inline'; "
-            "connect-src 'self'; "
-            "base-uri 'none'; "
-            "form-action 'self'; "
-            "frame-ancestors 'none'",
-        )
-        if cfg.normalized_public_url.startswith("https://"):
+        # Routes that render a document set their own policy; everything else is an
+        # API response that should be allowed to load nothing at all.
+        response.headers.setdefault("Content-Security-Policy", webapp.API_CSP)
+        response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+        response.headers.setdefault("Permissions-Policy", "geolocation=(), camera=(), microphone=()")
+        if cfg.public_url_is_https:
             response.headers.setdefault(
                 "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
             )
@@ -215,8 +311,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             candidates.add(default.removesuffix(":latest"))
         return model_id in candidates
 
-    @app.get("/health")
-    async def health() -> dict:
+    async def health_payload() -> dict:
         ollama = {
             "online": False,
             "default_model": cfg.default_model,
@@ -239,12 +334,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "service": "Local_Agents",
             "default_model": cfg.default_model,
             "web": web_tools.enabled,
+            "console": console_enabled,
             "providers": {"ollama": ollama},
         }
 
-    @app.get("/admin", response_class=HTMLResponse)
-    async def admin_page() -> str:
-        return ADMIN_HTML
+    @app.get("/health")
+    async def health(request: Request) -> dict:
+        await health_rate_limiter.check(request, bucket="health")
+        return await health_cache.get(health_payload)
+
+    def asset_response(name: str, request: Request, csp: str | None = None) -> Response:
+        asset = webapp.get_asset(name)
+        if not asset:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+        headers = {
+            "ETag": asset.etag,
+            "Cache-Control": asset.cache_control,
+            "X-Content-Type-Options": "nosniff",
+        }
+        if csp:
+            headers["Content-Security-Policy"] = csp
+        if request.headers.get("if-none-match") == asset.etag:
+            return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+        return Response(content=asset.body, media_type=asset.media_type, headers=headers)
+
+    @app.get("/", include_in_schema=False)
+    async def root() -> RedirectResponse:
+        return RedirectResponse("/app" if console_enabled else "/admin", status_code=307)
+
+    @app.get("/admin", include_in_schema=False)
+    async def admin_page(request: Request) -> Response:
+        return asset_response("admin.html", request, csp=webapp.CONSOLE_CSP)
+
+    @app.get("/app", include_in_schema=False)
+    async def console_page(request: Request) -> Response:
+        if not console_enabled:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "web console is disabled")
+        return asset_response("index.html", request, csp=webapp.CONSOLE_CSP)
+
+    @app.get("/assets/{name}", include_in_schema=False)
+    async def console_asset(name: str, request: Request) -> Response:
+        if name in {"index.html", "admin.html"}:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+        return asset_response(name, request)
+
+    @app.get("/sw.js", include_in_schema=False)
+    async def service_worker(request: Request) -> Response:
+        if not console_enabled:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+        return asset_response("sw.js", request, csp=webapp.WORKER_CSP)
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    async def web_manifest(request: Request) -> Response:
+        if not console_enabled:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+        return asset_response("manifest.webmanifest", request)
 
     @app.post(
         "/api/v1/admin/pairing",
@@ -300,6 +444,135 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or expired refresh token")
         return issue_tokens(db, cfg, device_id)
 
+    def _request_is_https(request: Request) -> bool:
+        if request.url.scheme == "https":
+            return True
+        # A forwarded scheme is only believable from a proxy the operator declared.
+        if peer_is_trusted_proxy(request, trusted_proxies):
+            return request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https"
+        return False
+
+    def _cookie_secure(request: Request) -> bool:
+        return cfg.cookie_secure_for(_request_is_https(request))
+
+    def _set_web_cookies(
+        response: Response,
+        refresh_token: str,
+        csrf_token: str,
+        *,
+        secure: bool,
+    ) -> None:
+        max_age = cfg.refresh_token_days * 24 * 3600
+        response.set_cookie(
+            REFRESH_COOKIE,
+            refresh_token,
+            max_age=max_age,
+            httponly=True,
+            secure=secure,
+            samesite="strict",
+            path=WEB_AUTH_PATH,
+        )
+        # Readable by the page on purpose: the console echoes it back in a header so
+        # the server can prove the request came from its own script and not from a
+        # cross-site form or image.
+        response.set_cookie(
+            CSRF_COOKIE,
+            csrf_token,
+            max_age=max_age,
+            httponly=False,
+            secure=secure,
+            samesite="strict",
+            path="/",
+        )
+
+    def _clear_web_cookies(response: Response, *, secure: bool) -> None:
+        response.delete_cookie(REFRESH_COOKIE, path=WEB_AUTH_PATH, samesite="strict", secure=secure, httponly=True)
+        response.delete_cookie(CSRF_COOKIE, path="/", samesite="strict", secure=secure)
+
+    def _require_console() -> None:
+        if not console_enabled:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "web console is disabled")
+
+    def _require_csrf(request: Request) -> None:
+        cookie = request.cookies.get(CSRF_COOKIE, "")
+        header = request.headers.get(CSRF_HEADER, "")
+        if not cookie or not header or not secrets.compare_digest(cookie, header):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "csrf token mismatch")
+
+    def _web_bundle(bundle: TokenBundle) -> tuple[WebSessionOut, str]:
+        csrf_token = secrets.token_urlsafe(32)
+        return (
+            WebSessionOut(
+                access_token=bundle.access_token,
+                expires_in=bundle.expires_in,
+                device_id=bundle.device_id,
+                csrf_token=csrf_token,
+            ),
+            csrf_token,
+        )
+
+    @app.post("/api/v1/web/session", response_model=WebSessionOut)
+    async def start_web_session(
+        request: Request,
+        body: WebSessionStart,
+        _rate_limit: None = Depends(auth_rate_limited),
+    ) -> JSONResponse:
+        _require_console()
+        device_id = db.consume_pairing(body.code, body.device_name.strip())
+        if not device_id:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or expired pairing code")
+        bundle = issue_tokens(db, cfg, device_id)
+        payload, csrf_token = _web_bundle(bundle)
+        response = JSONResponse(payload.model_dump())
+        _set_web_cookies(
+            response,
+            bundle.refresh_token,
+            csrf_token,
+            secure=_cookie_secure(request),
+        )
+        return response
+
+    @app.post("/api/v1/web/refresh", response_model=WebSessionOut)
+    async def refresh_web_session(
+        request: Request,
+        _rate_limit: None = Depends(auth_rate_limited),
+    ) -> JSONResponse:
+        _require_console()
+        _require_csrf(request)
+        cookie = request.cookies.get(REFRESH_COOKIE, "")
+        device_id = db.consume_refresh(cookie) if cookie else None
+        if not device_id:
+            # Deliberately does *not* clear the cookies. Two tabs reloading together
+            # both present the same refresh token; one rotates it and the other gets
+            # this 401. Clearing here would delete the token the winning tab had just
+            # been issued and log the whole browser out. The loser simply retries and
+            # picks up the rotated cookie from the shared jar.
+            return JSONResponse(
+                {"detail": "invalid or expired web session"},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+        bundle = issue_tokens(db, cfg, device_id)
+        payload, csrf_token = _web_bundle(bundle)
+        response = JSONResponse(payload.model_dump())
+        _set_web_cookies(
+            response,
+            bundle.refresh_token,
+            csrf_token,
+            secure=_cookie_secure(request),
+        )
+        return response
+
+    @app.post("/api/v1/web/logout")
+    async def end_web_session(request: Request) -> JSONResponse:
+        _require_console()
+        _require_csrf(request)
+        cookie = request.cookies.get(REFRESH_COOKIE, "")
+        if cookie:
+            db.revoke_token(cookie)
+        response = JSONResponse({"ok": True})
+        _clear_web_cookies(response, secure=_cookie_secure(request))
+        return response
+
     @app.get("/api/v1/capabilities", dependencies=[Depends(bearer_device)])
     async def capabilities() -> dict:
         providers = {
@@ -313,7 +586,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "providers": providers,
             "event_replay": True,
             "context_compression": True,
-            "max_concurrent_runs": 1,
+            "session_rename": True,
+            "session_delete": True,
+            "web_console": console_enabled,
+            "max_concurrent_runs": cfg.max_concurrent_runs,
         }
 
     @app.get("/api/v1/models", response_model=list[ModelOut], dependencies=[Depends(bearer_device)])
@@ -350,6 +626,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         device_id: str = Depends(bearer_device),
     ) -> dict:
         return db.create_session(body.title.strip(), owner_device_id=device_id)
+
+    @app.patch("/api/v1/sessions/{session_id}", response_model=SessionOut)
+    async def rename_session(
+        session_id: str,
+        body: SessionUpdate,
+        device_id: str = Depends(bearer_device),
+    ) -> dict:
+        session = db.set_session_title(session_id, body.title.strip(), owner_device_id=device_id)
+        if not session:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+        return session
+
+    @app.delete("/api/v1/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_session(
+        session_id: str,
+        device_id: str = Depends(bearer_device),
+    ) -> Response:
+        if not db.get_session(session_id, device_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+        # Stop anything still executing before the rows disappear, otherwise the
+        # worker keeps streaming into a conversation that no longer exists.
+        for run_id in db.session_run_ids(session_id, ACTIVE_RUN_STATUSES):
+            with contextlib.suppress(KeyError, ValueError):
+                await manager.command(run_id, CommandType.CANCEL, None)
+        if not db.delete_session(session_id, device_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.get("/api/v1/sessions/{session_id}/messages")
     async def messages(session_id: str, device_id: str = Depends(bearer_device)) -> list[dict]:
@@ -392,8 +695,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
 
     @app.get("/api/v1/runs", response_model=list[RunOut])
-    async def runs(limit: int = 100, device_id: str = Depends(bearer_device)) -> list[dict]:
-        return db.list_runs(limit, device_id)
+    async def runs(
+        limit: int = 100,
+        session_id: str | None = None,
+        device_id: str = Depends(bearer_device),
+    ) -> list[dict]:
+        return db.list_runs(limit, device_id, session_id=session_id)
 
     @app.post(
         "/api/v1/sessions/{session_id}/runs",
@@ -404,11 +711,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         body: RunCreate,
         device_id: str = Depends(bearer_device),
     ) -> dict:
-        if not db.get_session(session_id, device_id):
+        session = db.get_session(session_id, device_id)
+        if not session:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "session not found")
         if body.provider not in adapters:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "provider is not configured")
         prompt = body.prompt.strip()
+        if not prompt:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "prompt is required")
+        # Name the conversation after the first thing asked of it, so session lists
+        # are readable instead of a column of identical placeholder titles.
+        if str(session.get("title", "")).strip().lower() in PLACEHOLDER_SESSION_TITLES:
+            db.set_session_title(session_id, derive_session_title(prompt), owner_device_id=device_id)
         db.add_message(session_id, "user", prompt)
         run = db.create_run(
             session_id,
@@ -501,15 +815,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     return app
-
-
-ADMIN_HTML = """<!doctype html>
-<html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Local_Agents Yönetim</title><style>
-:root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;background:#090b0f;color:#edf2f7}
-body{margin:0;display:grid;min-height:100vh;place-items:center}.panel{width:min(520px,calc(100% - 32px));border:1px solid #28303a;background:#11151b;padding:24px;border-radius:8px}
-h1{font-size:22px;margin:0 0 6px}p{color:#9aa7b5;line-height:1.5}label{font-size:12px;color:#9aa7b5}input{box-sizing:border-box;width:100%;margin:7px 0 14px;padding:12px;border:1px solid #35404b;background:#090b0f;color:#fff;border-radius:6px}
-button{width:100%;padding:12px;border:0;border-radius:6px;background:#38d6a3;color:#07110d;font-weight:700;cursor:pointer}img{display:block;width:220px;height:220px;margin:20px auto 10px;background:white;padding:8px;border-radius:6px}.code{word-break:break-all;font-family:monospace;font-size:11px;color:#b6c2cc}
-</style></head><body><main class="panel"><h1>Local_Agents</h1><p>Telefon eşleştirmesi için tek kullanımlık QR üret.</p><label>Yönetim anahtarı</label><input id="token" type="password" autocomplete="current-password"><button id="create">Eşleştirme kodu üret</button><div id="out"></div></main><script>
-document.querySelector('#create').onclick=async()=>{const out=document.querySelector('#out');out.textContent='Üretiliyor...';const r=await fetch('/api/v1/admin/pairing',{method:'POST',headers:{'X-Admin-Token':document.querySelector('#token').value}});if(!r.ok){out.textContent='Yetkilendirme başarısız.';return}const d=await r.json();out.innerHTML='<img alt="Eşleştirme QR" src="'+d.qr_data_url+'"><div class="code">'+d.code+'</div>'}
-</script></body></html>"""

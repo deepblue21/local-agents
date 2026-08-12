@@ -1,13 +1,16 @@
 # Local_Agents
 
-Local_Agents is a native Android controller for an LLM agent running on your own PC.
-The phone can start tasks, follow model output and tool activity live, pause or cancel
-runs, and reconnect to persisted history after losing network access.
+Local_Agents controls an LLM agent running on your own PC. There are two clients with
+the same feature set: a native Android app and a browser console the companion serves
+itself. Either one can start tasks, follow model output and tool activity live, pause or
+cancel runs, and reconnect to persisted history after losing network access.
 
 ## Repository layout
 
 - `android/`: Kotlin and Jetpack Compose application.
 - `server/`: FastAPI companion API, agent runtime, persistence, and tests.
+- `server/local_agents/web/`: the browser console served at `/app` (no build step).
+- `e2e/`: Playwright suites for the web console and the Android smoke harness.
 - `runner/`: Isolated workspace tool service used by the agent.
 - `infra/`: Cloudflare Tunnel and container configuration.
 - `scripts/`: Windows development helpers.
@@ -47,7 +50,23 @@ to `LOCAL_AGENTS_WORKSPACE`.
 5. Open `http://127.0.0.1:8791/admin` or `http://salih.tail033a5f.ts.net:8787/admin`
    to create a pairing code. Pairing codes use four-character groups and are valid for
    `LOCAL_AGENTS_PAIRING_CODE_MINUTES` minutes; the development default is 240 minutes.
-6. Build the Android app with `android\gradlew.bat assembleDebug`.
+6. Open `http://127.0.0.1:8791/app` and paste the code to use the browser console, or
+   build the Android app with `android\gradlew.bat assembleDebug`.
+
+## Web console
+
+The companion serves a browser console at `/app` with the same feature set as the
+Android app: pairing, sessions with rename and delete, live streaming with tool and
+source timelines, run controls, context compression, model selection, eight themes, and
+Turkish/English strings. It installs as a PWA and needs no build step or Node runtime —
+it is static files served by the same FastAPI process.
+
+Browser credentials use a different split from Android, which has the Keystore: the
+refresh token is delivered only as an `HttpOnly`, `SameSite=Strict` cookie scoped to
+`/api/v1/web` and never reaches page script, while the short-lived access token is kept
+in memory and re-derived on reload. Details in `docs/WEB_CONSOLE.md`.
+
+Set `LOCAL_AGENTS_WEB_CONSOLE_ENABLED=0` to serve the API and `/admin` only.
 
 For a host-only development run, `scripts\dev-server.ps1` starts the FastAPI companion on
 `127.0.0.1:8787`. Keep the Docker stack for normal phone testing because it preserves the
@@ -123,6 +142,19 @@ scripts\test.ps1            # ruff + pytest from the server venv
 cd server; python -m pytest # runs server/tests and ../runner/tests
 ```
 
+The web console has a Playwright suite that drives the real browser against a stub
+Ollama, so no GPU or model is needed. It covers pairing, streaming, run lifecycle,
+session rename/delete, theme persistence, cookie inaccessibility, CSP, and XSS
+handling, in both desktop and mobile viewports:
+
+```bash
+cd e2e/web-console
+npm ci && npx playwright install --with-deps chromium
+npm test
+```
+
+CI runs the Python suite, the browser suite, and the Android unit tests.
+
 ## Security
 
 The service is designed to sit behind a Cloudflare Tunnel, so every non-health request is
@@ -134,7 +166,12 @@ last server URL prefilled, and returns to pairing so a new code can be entered.
 Before exposing the service publicly, set a strong `LOCAL_AGENTS_ADMIN_TOKEN`
 (`scripts\configure.ps1` generates one). The companion refuses insecure admin tokens by
 default, disables public OpenAPI docs, rate-limits auth-adjacent endpoints, and sends
-browser security headers. A full review — findings, severities, and fixes — is in
+browser security headers.
+
+If the companion sits behind Cloudflare Tunnel or any reverse proxy, also set
+`LOCAL_AGENTS_TRUSTED_PROXY_NETWORKS` to that proxy's network. Client-IP headers such as
+`CF-Connecting-IP` are ignored unless the peer is in that list — otherwise any caller
+could rotate the header and give itself an unlimited number of rate-limit buckets. A full review — findings, severities, and fixes — is in
 `docs/SECURITY_AUDIT.md`, with stack best-practice notes in `docs/RESEARCH.md`.
 
 See `docs/ARCHITECTURE.md` for the protocol and security boundaries, `docs/SECURITY_AUDIT.md`

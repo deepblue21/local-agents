@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import ipaddress
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,10 +44,62 @@ class Settings(BaseSettings):
     web_search_timeout_seconds: float = 10.0
     web_fetch_allow_private: bool = False
     context_window_tokens: int = 8192
+    # Browser console served by the companion itself. Same API, same device
+    # ownership model as Android; only the credential storage differs.
+    web_console_enabled: bool = True
+    web_session_cookie_secure: bool | None = None
+    # Only peers inside these networks may set client-IP forwarding headers.
+    # Empty means "trust nobody", which is correct for a directly exposed port.
+    trusted_proxy_networks: str = ""
+    health_cache_seconds: float = 5.0
+    retention_sweep_hours: float = 12.0
+
+    @field_validator("web_session_cookie_secure", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, value):
+        """Treat a blank value as "not configured".
+
+        `.env` files are hand-edited, and writing `LOCAL_AGENTS_X=` to mean "leave the
+        default" is the natural thing to do. Without this, an empty optional boolean
+        fails validation and the companion refuses to start.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def normalized_public_url(self) -> str:
         return self.public_url.rstrip("/")
+
+    @property
+    def public_url_is_https(self) -> bool:
+        return self.normalized_public_url.lower().startswith("https://")
+
+    def cookie_secure_for(self, request_is_https: bool) -> bool:
+        """Whether web-session cookies should carry the ``Secure`` attribute.
+
+        Derived from the scheme the browser actually used, not from ``public_url``.
+        A companion is commonly reached over HTTPS through the tunnel *and* over plain
+        HTTP on a tailnet or loopback address; pinning ``Secure`` on would silently
+        break the console on the plain-HTTP path, because the browser would refuse to
+        store or return the cookie.
+        """
+        if self.web_session_cookie_secure is not None:
+            return self.web_session_cookie_secure
+        return request_is_https
+
+    @property
+    def trusted_proxies(self) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+        networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+        for raw in self.trusted_proxy_networks.split(","):
+            candidate = raw.strip()
+            if not candidate:
+                continue
+            try:
+                networks.append(ipaddress.ip_network(candidate, strict=False))
+            except ValueError:
+                continue
+        return tuple(networks)
 
     @property
     def admin_token_is_insecure(self) -> bool:

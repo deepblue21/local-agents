@@ -341,6 +341,55 @@ class LocalAgentsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun renameSession(session: AgentSession, title: String) {
+        val clean = title.trim().take(MAX_SESSION_TITLE)
+        if (clean.isEmpty() || clean == session.title) return
+        viewModelScope.launch {
+            try {
+                val updated = withAuth { token ->
+                    client.renameSession(settings.baseUrl, token, session.id, clean)
+                }
+                val index = sessions.indexOfFirst { it.id == session.id }
+                if (index >= 0) sessions[index] = updated
+                if (selectedSession?.id == session.id) selectedSession = updated
+                LocalAgentsWidgetUpdater.updateAll(getApplication())
+            } catch (exc: Exception) {
+                error = friendlyError(exc)
+            }
+        }
+    }
+
+    /**
+     * Deletes a conversation on the companion.
+     *
+     * The server cancels any run still executing before removing the rows, so the
+     * local stream is dropped first to avoid rendering events for a session that is
+     * on its way out.
+     */
+    fun deleteSession(session: AgentSession) {
+        viewModelScope.launch {
+            try {
+                if (selectedSession?.id == session.id) eventSource?.cancel()
+                withAuth { token -> client.deleteSession(settings.baseUrl, token, session.id) }
+                sessions.removeAll { it.id == session.id }
+                runs.removeAll { it.sessionId == session.id }
+                if (selectedSession?.id == session.id) {
+                    selectedSession = null
+                    activeRun = null
+                    messages.clear()
+                    tools.clear()
+                    sources.clear()
+                    sessionContext = SessionContext()
+                    val next = sessions.firstOrNull()
+                    if (next != null) selectSession(next) else if (tab == MainTab.CHAT) tab = MainTab.SESSIONS
+                }
+                LocalAgentsWidgetUpdater.updateAll(getApplication())
+            } catch (exc: Exception) {
+                error = friendlyError(exc)
+            }
+        }
+    }
+
     fun send(prompt: String) {
         val clean = prompt.trim()
         val session = selectedSession
@@ -371,6 +420,16 @@ class LocalAgentsViewModel(app: Application) : AndroidViewModel(app) {
                 activeRun = run
                 runs.add(0, run)
                 LocalAgentsWidgetUpdater.updateAll(getApplication())
+                // The companion names an untitled conversation after its first prompt,
+                // so the local copy is stale the moment the run is created.
+                try {
+                    val refreshed = withAuth { token -> client.listSessions(settings.baseUrl, token) }
+                    val index = sessions.indexOfFirst { it.id == session.id }
+                    val updated = refreshed.firstOrNull { it.id == session.id }
+                    if (index >= 0 && updated != null) sessions[index] = updated
+                    if (selectedSession?.id == session.id && updated != null) selectedSession = updated
+                } catch (_: Exception) {
+                }
                 try {
                     sessionContext = withAuth { token ->
                         client.sessionContext(settings.baseUrl, token, session.id)
@@ -704,6 +763,8 @@ class LocalAgentsViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val MAX_RECONNECT = 5
+        /** Matches the companion's `SessionUpdate.title` bound. */
+        internal const val MAX_SESSION_TITLE = 120
         private val ACTIVE_STATUSES = setOf("queued", "running", "paused")
     }
 }

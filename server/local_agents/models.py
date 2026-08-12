@@ -50,6 +50,10 @@ class SessionCreate(BaseModel):
     title: str = Field(default="Yeni sohbet", min_length=1, max_length=120)
 
 
+class SessionUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
 class SessionOut(BaseModel):
     id: str
     title: str
@@ -127,3 +131,22 @@ class PairingOut(BaseModel):
     expires_at: datetime
     pairing_uri: str
     qr_data_url: str
+
+
+class WebSessionStart(BaseModel):
+    code: str = Field(min_length=20, max_length=256)
+    device_name: str = Field(default="Web console", min_length=1, max_length=80)
+
+
+class WebSessionOut(BaseModel):
+    """Browser-side credential bundle.
+
+    The refresh token is deliberately absent: it is delivered as an HttpOnly cookie
+    so that script running in the page cannot read or persist it. The access token
+    is short-lived and expected to be kept in memory only.
+    """
+
+    access_token: str
+    expires_in: int
+    device_id: str
+    csrf_token: str
